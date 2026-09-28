@@ -92,26 +92,59 @@ def http(method, url, name, **kwargs):
     return response
 
 
-def db(method="GET", body=None, filters=None):
-    key = CFG["SUPABASE_SECRET_KEY"]
-    headers = {
-        "apikey": key,
-        "Prefer": "return=representation",
+@st.cache_resource(show_spinner=False)
+def shared_store():
+    from threading import RLock
+
+    state = {
+        "snapshot": None,
+        "cache": {},
+        "lock_token": None,
+        "lock_until": None,
     }
+    return state, RLock()
 
-    # 기존 service_role 키도 지원
-    if not key.startswith("sb_secret_"):
-        headers["Authorization"] = "Bearer " + key
 
-    return http(
-        method,
-        CFG["SUPABASE_URL"].rstrip("/") + "/rest/v1/bid_shared",
-        "공유 저장소",
-        headers=headers,
-        params={"id": "eq.1", **(filters or {})},
-        json=body,
-    ).json()
+def db(method="GET", body=None, filters=None):
+    from copy import deepcopy
 
+    state, mutex = shared_store()
+
+    with mutex:
+        if method == "GET":
+            return [deepcopy(state)]
+
+        if method != "PATCH":
+            raise RuntimeError("지원하지 않는 저장 방식입니다.")
+
+        filters = filters or {}
+        expires = (
+            datetime.fromisoformat(state["lock_until"])
+            if state["lock_until"]
+            else None
+        )
+
+        # 다른 직원이 갱신 중이면 중복 실행 방지
+        if "or" in filters:
+            if expires is not None and expires >= now():
+                return []
+
+        # 현재 갱신 작업만 저장·잠금 해제 가능
+        if "lock_token" in filters:
+            expected_token = filters["lock_token"][3:]
+            if state["lock_token"] != expected_token:
+                return []
+
+        # 만료된 작업이 새 결과를 덮어쓰는 것을 방지
+        if "lock_until" in filters:
+            cutoff = datetime.fromisoformat(
+                filters["lock_until"][3:]
+            )
+            if expires is None or expires <= cutoff:
+                return []
+
+        state.update(deepcopy(body or {}))
+        return [deepcopy(state)]
 
 def save_locked(token, **values):
     result = db(
