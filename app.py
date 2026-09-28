@@ -514,7 +514,7 @@ table = table.sort_values(
 ).drop(columns="_정렬")
 
 # --- 🔍 검색·필터 ---
-c1, c2, c3 = st.columns([3, 2, 2])
+c1, c2, _ = st.columns([2.2, 2, 3.8], gap="small")
 query = c1.text_input(
     "🔍 검색", placeholder="공고명, 공고기관 등"
 )
@@ -524,7 +524,7 @@ low, high = c2.select_slider(
     value=(PRICE_STEPS[0], PRICE_STEPS[-1]),
     format_func=won,
 )
-r1, r2 = st.columns([5, 1])
+r1, r2, _ = st.columns([0.8, 1, 6])
 only_new = r2.toggle("🆕 새 공고만")
 
 shown = table
