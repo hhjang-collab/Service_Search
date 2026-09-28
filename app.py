@@ -116,7 +116,11 @@ with st.sidebar:
     
     st.header("🔍 검색 설정")
     # 📌 공공데이터포털 API Key (일반적으로 st.secrets로 관리 권장)
-    api_key = st.text_input("공공데이터포털 API Key", type="password", help="발급받은 디코딩(Decoding) 키를 입력하세요.")
+    api_key = st.secrets.get("G2B_API_KEY", "").strip()
+
+    if not api_key:
+        st.error("Streamlit Secrets에 G2B_API_KEY를 등록해주세요.")
+        st.stop()
     
     keyword = st.text_input("검색 키워드 (공고명)", placeholder="예: 데이터, AI, 시스템")
     
