@@ -15,7 +15,72 @@ import pandas as pd
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="나라장터 용역 추천", layout="wide")
+_LOGO = Path(__file__).with_name("company_logo.png")
+st.set_page_config(
+    page_title="나라장터 용역 추천",
+    page_icon=str(_LOGO) if _LOGO.exists() else "📋",
+    layout="wide",
+)
+
+# --- 🎨 통합 CSS (사내 도구 공통 스타일) ---
+st.markdown(
+    """
+    <style>
+    /* 'Press Enter to apply' 안내 문구 숨기기 */
+    div[data-testid="InputInstructions"] { display: none !important; }
+
+    /* 회사 로고: 우측 상단 고정 */
+    .company-logo {
+        position: fixed; top: 70px; right: 30px;
+        width: 110px; z-index: 1000; cursor: pointer;
+    }
+    @media (max-width: 640px) {
+        .company-logo { width: 80px; top: 60px; right: 10px; }
+    }
+
+    /* 조회 중 안내 창 */
+    .busy-back {
+        position: fixed; inset: 0; z-index: 999999;
+        background: rgba(0, 0, 0, .35); backdrop-filter: blur(2px);
+        display: flex; align-items: center; justify-content: center;
+    }
+    .busy-card {
+        width: min(420px, calc(100vw - 32px));
+        background: #fff; color: #31333F; border-radius: 14px;
+        padding: 28px 28px 22px; text-align: center;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, .25);
+    }
+    .busy-spin {
+        width: 38px; height: 38px; margin: 0 auto 14px;
+        border: 4px solid rgba(49, 51, 63, .15);
+        border-top-color: #FF4B4B; border-radius: 50%;
+        animation: busy-rot .9s linear infinite;
+    }
+    @keyframes busy-rot { to { transform: rotate(360deg); } }
+    .busy-title { font-size: 1.1em; font-weight: 700; margin-bottom: 6px; }
+    .busy-step { font-size: .95em; opacity: .8; min-height: 1.4em; }
+    .busy-track {
+        height: 8px; margin: 14px 0 4px; border-radius: 4px;
+        background: rgba(49, 51, 63, .12); overflow: hidden;
+    }
+    .busy-fill { height: 100%; background: #FF4B4B; transition: width .3s; }
+    .busy-pct { font-size: .85em; opacity: .7; }
+    .busy-note { margin-top: 14px; font-size: .8em; opacity: .6; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --- 🖼️ 회사 로고 (클릭 시 홈페이지로 이동) ---
+if _LOGO.exists():
+    st.markdown(
+        '<a href="http://www.iptob.co.kr/" target="_blank" '
+        'title="(주)아이피투비 홈페이지로 이동">'
+        '<img class="company-logo" alt="(주)아이피투비 로고" '
+        'src="data:image/png;base64,'
+        f'{base64.b64encode(_LOGO.read_bytes()).decode()}"></a>',
+        unsafe_allow_html=True,
+    )
 
 KST = ZoneInfo("Asia/Seoul")
 # 관련도 점수별 표시(화면에는 색만 보임)
@@ -524,7 +589,7 @@ WORKERS = max(1, min(8, int(st.secrets.get("AI_WORKERS", 4))))
 MIN_SCORE = max(3, min(5, int(st.secrets.get("MIN_SCORE", 4))))
 
 if not st.session_state.get("authenticated"):
-    st.warning("🔒 비밀번호를 입력해주세요.")
+    st.warning("🔒 보안을 위해 비밀번호를 입력해주세요.")
     with st.form("login_form"):
         pwd = st.text_input("비밀번호", type="password")
         if st.form_submit_button("확인"):
@@ -537,27 +602,31 @@ if not st.session_state.get("authenticated"):
                 st.error("비밀번호가 일치하지 않습니다.")
     st.stop()
 
-st.title("나라장터 용역 추천")
+HR = (
+    '<hr style="margin-top: 15px; margin-bottom: 15px; border: 0; '
+    'border-top: 1px solid rgba(128, 128, 128, 0.3);">'
+)
 
 with st.sidebar:
-    st.link_button("🏠 홈으로", "https://ip2b-work-tools.streamlit.app/")
-    st.caption(f"공고 등록일 기준 최근 {DAYS}일을 조회합니다.")
-    st.caption("수의계약 공고는 제외합니다.")
-    if st.button("로그아웃"):
-        st.session_state.clear()
-        st.rerun()
-
-logo = Path(__file__).with_name("company_logo.png")
-if logo.exists():
-    b64 = base64.b64encode(logo.read_bytes()).decode()
     st.markdown(
-        '<style>.logo{position:fixed;top:65px;right:25px;'
-        'width:100px;z-index:99;}'
-        '@media(max-width:768px){.logo{width:65px;right:12px;}}'
-        '</style>'
-        f'<img class="logo" src="data:image/png;base64,{b64}">',
+        """
+        <div style="margin-top: 5px;">
+            <a href="https://ip2b-work-tools.streamlit.app/" target="_blank"
+               style="text-decoration: none; color: inherit;
+                      font-size: 15px; font-weight: 600;">
+                🏠 홈으로
+            </a>
+        </div>
+        """ + HR.replace("margin-top: 15px", "margin-top: 10px"),
         unsafe_allow_html=True,
     )
+    st.markdown("### 🔎 조회 기준")
+    st.caption(f"공고 등록일 기준 최근 {DAYS}일을 조회합니다.")
+    st.caption("수의계약 공고는 제외합니다.")
+    st.markdown(HR, unsafe_allow_html=True)
+    if st.button("🚪 로그아웃", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
 
 try:
     df = pd.read_excel(
@@ -579,9 +648,71 @@ except Exception:
     st.stop()
 
 PROFILE_HASH = digest([PROFILE_TEXT, RULES, MODEL])
-st.caption(f"기존 수행실적 {PROFILE_TEXT.count(chr(10)) + 1}건 기준으로 검토합니다.")
+
+# --- 📝 헤더 영역 ---
+st.markdown(
+    f"""
+    <div style="text-align: center; width: 100%;">
+        <h1 style="margin: 0; padding: 0; opacity: 0.85;">
+            나라장터 용역 추천
+        </h1>
+        <p style="margin-top: 10px; font-size: 1.05em; opacity: 0.75;">
+            기존 수행실적 {PROFILE_TEXT.count(chr(10)) + 1}건을 기준으로
+            나라장터 용역 입찰공고를 검토합니다.
+        </p>
+    </div>
+    <br>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ---------------------------------------------------------------- 조회·갱신
+
+class Busy:
+    """조회 중 화면 가운데에 띄우는 작업 안내 창.
+
+    refresh()가 쓰는 status.caption()·bar.progress()·empty()를 그대로
+    받아 안내 창 안에 표시한다(처리 방식은 바꾸지 않음).
+    """
+
+    def __init__(self):
+        self.box = st.empty()
+        self.step = "나라장터에 접속하고 있습니다..."
+        self.pct = None
+        self.show()
+
+    def show(self):
+        bar = ""
+        if self.pct is not None:
+            pct = max(0, min(100, round(self.pct * 100)))
+            bar = (
+                f'<div class="busy-track"><div class="busy-fill" '
+                f'style="width:{pct}%"></div></div>'
+                f'<div class="busy-pct">{pct}%</div>'
+            )
+        self.box.markdown(
+            '<div class="busy-back"><div class="busy-card">'
+            '<div class="busy-spin"></div>'
+            '<div class="busy-title">나라장터 공고를 조회하고 있습니다</div>'
+            f'<div class="busy-step">{html.escape(self.step)}</div>'
+            f"{bar}"
+            '<div class="busy-note">창을 닫거나 새로고침하지 마세요.<br>'
+            "새 공고가 많으면 몇 분 걸릴 수 있습니다.</div>"
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    def caption(self, text):
+        self.step, self.pct = text, None
+        self.show()
+
+    def progress(self, value, text=""):
+        self.step, self.pct = text or self.step, value
+        self.show()
+
+    def empty(self):
+        self.box.empty()
+
 
 restore()
 
@@ -590,10 +721,11 @@ if st.button("🔄 나라장터 입찰공고 조회", type="primary"):
     if not lock.acquire(blocking=False):
         st.error("다른 직원이 갱신 중입니다. 잠시 후 다시 확인해주세요.")
     else:
-        status, bar = st.empty(), st.empty()
+        status = bar = Busy()
         try:
             error = refresh(status, bar)
             if sheets_enabled():
+                status.caption("조회 결과를 구글 시트에 저장하고 있습니다...")
                 try:
                     save_sheet(shared()[0]["snapshot"])
                 except Exception as exc:
@@ -726,7 +858,7 @@ else:
         lambda v: f"{int(v):,}" if pd.notna(v) else ""
     )
     st.download_button(
-        "결과 CSV 저장",
+        "📥 결과 CSV 저장",
         csv.to_csv(index=False).encode("utf-8-sig"),
         "용역추천.csv",
         "text/csv",
