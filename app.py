@@ -2,7 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
-import re  # 정규표현식 모듈 추가 (JSON 파싱 방어용)
+import re  
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -158,6 +158,7 @@ def db(method="GET", body=None, filters=None):
         state.update(deepcopy(body or {}))
         return [deepcopy(state)]
 
+
 def save_locked(token, **values):
     result = db(
         "PATCH",
@@ -242,7 +243,7 @@ def collect(token, status):
     all_rows = []
 
     url = (
-        "https://apis.data.go.kr/1230000/ad/"
+        "[https://apis.data.go.kr/1230000/ad/](https://apis.data.go.kr/1230000/ad/)"
         "BidPublicInfoService/getBidPblancListInfoServc"
     )
 
@@ -347,7 +348,7 @@ def collect(token, status):
 
 
 def create_gemini_cache(profile):
-    url = "https://generativelanguage.googleapis.com/v1beta/cachedContents"
+    url = "[https://generativelanguage.googleapis.com/v1beta/cachedContents](https://generativelanguage.googleapis.com/v1beta/cachedContents)"
     headers = {"x-goog-api-key": CFG["GOOGLE_API_KEY"]}
     payload = {
         "model": f"models/{MODEL}",
@@ -372,10 +373,11 @@ def create_gemini_cache(profile):
     
     return None
 
+
 def delete_gemini_cache(cache_name):
     if not cache_name:
         return
-    url = f"https://generativelanguage.googleapis.com/v1beta/{cache_name}"
+    url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){cache_name}"
     headers = {"x-goog-api-key": CFG["GOOGLE_API_KEY"]}
     try:
         requests.delete(url, headers=headers, timeout=10)
@@ -444,7 +446,7 @@ def classify(batch, profile, cache_name=None):
         try:
             response = http(
                 "POST",
-                f"https://generativelanguage.googleapis.com/v1beta/"
+                f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/)"
                 f"models/{MODEL}:generateContent",
                 "Gemini",
                 headers={"x-goog-api-key": CFG["GOOGLE_API_KEY"]},
@@ -470,8 +472,419 @@ def classify(batch, profile, cache_name=None):
         ).strip()
 
         # ==========================================
-        # 💡 [추가] JSON 강제 파싱 및 마크다운 찌꺼기 방어 로직
+        # 💡 [수정] 백틱 기호를 직접 쓰지 않고 정규식으로 안전하게 치환
         # ==========================================
-        # 1. 앞뒤에 붙은 ```json 및 ``` 마크다운 기호를 정규표현식으로 제거
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*
+        text = re.sub(r"^`{3}(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*`{3}$", "", text)
+        
+        # 2. 강제로 배열의 시작('[')과 끝(']') 사이의 텍스트만 추출
+        start_idx = text.find('[')
+        end_idx = text.rfind(']')
+        if start_idx != -1 and end_idx != -1:
+            text = text[start_idx:end_idx+1]
+            
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"JSON 파싱 실패: {e}")
+        # ==========================================
+
+        wanted = {row["_key"] for row in batch}
+        valid_refs = {row["id"] for row in profile}
+
+        if not isinstance(result, list) or len(result) != len(wanted):
+            raise ValueError("목록 개수 불일치")
+        if {row["id"] for row in result} != wanted:
+            raise ValueError("요청한 공고 ID 불일치")
+
+        for row in result:
+            if row["label"] not in LABELS:
+                raise ValueError("허용되지 않은 라벨 사용")
+            if not isinstance(row["refs"], list):
+                raise ValueError("refs 형식이 리스트가 아닙니다")
+            if len(row["refs"]) > 3 or any(
+                type(ref) is not int or ref not in valid_refs
+                for ref in row["refs"]
+            ):
+                raise ValueError("참조 실적 ID 에러")
+            if not all(
+                isinstance(row[key], str) and row[key].strip()
+                for key in ["thought_process", "reason", "check"]
+            ):
+                raise ValueError("필수 텍스트 누락")
+            if row["label"] in LABELS[:2] and not row["refs"]:
+                raise ValueError("추천인데 참조 실적이 없음")
+
+        return {row["id"]: row for row in result}
+
+    except (ValueError, KeyError, IndexError, TypeError) as e:
+        print(f"AI 응답 파싱 에러 발생: {e}")
+        raise RuntimeError(
+            "AI 응답이 불완전합니다. 잠시 후 다시 시도해 주세요."
+        ) from None
+
+
+# 설정 및 로그인
+try:
+    CFG = {
+        key: str(st.secrets.get(key, "")).strip()
+        for key in [
+            "APP_PASSWORD", "G2B_API_KEY", "GOOGLE_API_KEY",
+        ]
+    }
+except FileNotFoundError:
+    st.error("Streamlit Secrets를 먼저 설정해주세요.")
+    st.stop()
+
+if not all(CFG.values()):
+    st.error(
+        "Secrets 설정 누락: "
+        + ", ".join(key for key, value in CFG.items() if not value)
+    )
+    st.stop()
+
+MODEL = str(st.secrets.get("GEMINI_MODEL", "gemini-1.5-flash"))
+DAYS = max(1, min(365, int(st.secrets.get("LOOKBACK_DAYS", 7))))
+BATCHES = max(
+    1, min(30, int(st.secrets.get("AI_BATCHES_PER_CLICK", 5)))
+)
+
+if not st.session_state.get("authenticated"):
+    st.warning("🔒 비밀번호를 입력해주세요.")
+    with st.form("login_form"):
+        pwd = st.text_input("비밀번호", type="password")
+        if st.form_submit_button("확인"):
+            if hmac.compare_digest(
+                pwd.encode(), CFG["APP_PASSWORD"].encode()
+            ):
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("비밀번호가 일치하지 않습니다.")
+    st.stop()
+
+st.title("나라장터 용역 추천")
+
+with st.sidebar:
+    st.link_button(
+        "🏠 홈으로", "[https://ip2b-work-tools.streamlit.app/](https://ip2b-work-tools.streamlit.app/)"
+    )
+    st.caption(f"공고 등록일 기준 최근 {DAYS}일을 조회합니다.")
+    st.caption(
+        "이 기간보다 오래전에 등록된 미마감 공고는 "
+        "포함되지 않을 수 있습니다."
+    )
+    if st.button("로그아웃"):
+        st.session_state.clear()
+        st.rerun()
+
+logo = Path(__file__).with_name("company_logo.png")
+if logo.exists():
+    b64 = base64.b64encode(logo.read_bytes()).decode()
+    st.markdown(
+        '<style>.logo{position:fixed;top:65px;right:25px;'
+        'width:100px;z-index:99;}'
+        '@media(max-width:768px){.logo{width:65px;right:12px;}}'
+        '</style>'
+        f'<img class="logo" src="data:image/png;base64,{b64}">',
+        unsafe_allow_html=True,
+    )
+
+try:
+    df = pd.read_excel(
+        Path(__file__).with_name("experience.xlsx"),
+        sheet_name="사업 명단",
+    ).fillna("")
+
+    profile = [
+        {
+            "id": index + 2,
+            "분야": str(row["분야"]),
+            "영역": str(row["영역"]),
+            "사업명": str(row["사업(용역)명"]).strip(),
+        }
+        for index, row in df.iterrows()
+        if str(row["사업(용역)명"]).strip()
+    ]
+    if not profile:
+        raise ValueError
+except Exception:
+    st.error(
+        "app.py와 같은 폴더에 experience.xlsx를 올려주세요. "
+        "시트·열 이름은 원본을 유지하세요."
+    )
+    st.stop()
+
+profile_hash = digest([profile, RULES, MODEL])
+
+st.caption(
+    f"참고 사업 {len(profile)}건 · "
+    "유사 실적과 확장 도전 기회를 함께 검토합니다."
+)
+
+if st.button("🔄 용역 조회·갱신", type="primary"):
+    token = str(uuid.uuid4())
+    status = st.empty()
+    progress_bar = st.empty()
+    locked = False
+    active_cache_name = None
+
+    try:
+        claimed = db(
+            "PATCH",
+            {
+                "lock_token": token,
+                "lock_until": (
+                    now() + timedelta(minutes=5)
+                ).isoformat(),
+            },
+            {
+                "or": (
+                    "(lock_until.is.null,"
+                    f"lock_until.lt.{now().isoformat()})"
+                )
+            },
+        )
+        if not claimed:
+            raise RuntimeError(
+                "다른 직원이 갱신 중입니다. "
+                "잠시 후 다시 확인해주세요."
+            )
+
+        locked = True
+        cache = claimed[0]["cache"] or {}
+        rows, unknown, scope = collect(token, status)
+
+        for row in rows:
+            row["_key"] = digest([profile_hash, row])
+
+        current_keys = {row["_key"] for row in rows}
+        cache = {
+            key: value for key, value in cache.items()
+            if key in current_keys
+        }
+
+        todo = [
+            row for row in rows if row["_key"] not in cache
+        ]
+        total_todo = len(todo)
+        
+        if total_todo > 0:
+            status.caption("데이터 최적화(Context Caching) 시도 중...")
+            active_cache_name = create_gemini_cache(profile)
+            
+            if active_cache_name:
+                status.caption("✅ 비용 절감 및 가속(Cache) 모드로 AI 검토를 시작합니다.")
+            else:
+                status.caption("ℹ️ 데이터가 캐시 최소 요건(약 3만 토큰) 미만이므로 일반 모드로 진행합니다.")
+                
+            pb = progress_bar.progress(0, text="AI 검토 준비 중...")
+        
+        for offset in range(
+            0, min(total_todo, BATCHES * 20), 20
+        ):
+            save_locked(token)
+
+            current_batch_size = min(20, total_todo - offset)
+            pb.progress(
+                (offset + current_batch_size) / total_todo, 
+                text=f"AI 검토 중... ({offset + 1} ~ {offset + current_batch_size} / {total_todo}건)"
+            )
+
+            cache.update(
+                classify(todo[offset:offset + 20], profile, cache_name=active_cache_name)
+            )
+            save_locked(token, cache=cache)
+
+        output = [
+            {
+                **row,
+                **cache.get(
+                    row["_key"],
+                    {
+                        "label": "미분석",
+                        "thought_process": "",
+                        "reason": "",
+                        "refs": [],
+                        "check": "",
+                    },
+                ),
+            }
+            for row in rows
+        ]
+
+        ref_names = {
+            row["id"]: row["사업명"] for row in profile
+        }
+        for row in output:
+            row["ref_titles"] = [
+                ref_names[ref] for ref in row["refs"]
+            ]
+
+        save_locked(
+            token,
+            cache=cache,
+            snapshot={
+                "at": now().isoformat(),
+                "scope": scope,
+                "profile": profile_hash,
+                "rows": output,
+                "unknown": unknown,
+            },
+        )
+
+        st.success(
+            "공유 목록을 갱신했습니다. "
+            "미분석 공고가 남으면 다시 눌러 이어서 분석하세요."
+        )
+
+    except Exception as exc:
+        message = (
+            str(exc)
+            if isinstance(exc, RuntimeError)
+            else "처리 오류. 설정과 입력 형식을 확인해주세요."
+        )
+        st.error(message + " 마지막 저장 목록을 표시합니다.")
+
+    finally:
+        if active_cache_name:
+            delete_gemini_cache(active_cache_name)
+            
+        status.empty()
+        progress_bar.empty()
+        if locked:
+            try:
+                db(
+                    "PATCH",
+                    {"lock_token": None, "lock_until": None},
+                    {"lock_token": "eq." + token},
+                )
+            except Exception:
+                st.warning(
+                    "갱신 잠금 해제 확인 실패. "
+                    "최대 5분 후 다시 시도해주세요."
+                )
+
+try:
+    state = db()
+    snapshot = state[0]["snapshot"] if state else None
+except Exception:
+    st.error(
+        "임시 저장 목록을 읽지 못했습니다. "
+        "앱을 새로고침해주세요."
+    )
+    st.stop()
+
+if not snapshot:
+    st.info("아직 저장된 목록이 없습니다. 조회 버튼을 눌러주세요.")
+    st.stop()
+
+saved_at = snapshot["at"][:19].replace("T", " ")
+st.caption(
+    f"마지막 저장: {saved_at} (한국시간) · "
+    f"수집 기간: {' ~ '.join(snapshot['scope'])}"
+)
+
+if snapshot["profile"] != profile_hash:
+    st.warning(
+        "이 목록은 이전 실적자료·모델·판단 기준으로 "
+        "분석되었습니다. 조회 버튼으로 갱신해주세요."
+    )
+
+result = []
+for row in snapshot["rows"]:
+    close_time = deadline(row["bidClseDt"])
+    link = str(row.get("bidNtceDtlUrl") or "")
+
+    try:
+        price = int(float(row["presmptPrce"])) if row.get("presmptPrce") else None
+    except ValueError:
+        price = None
+
+    result.append({
+        "분류": row["label"],
+        "마감 상태": (
+            "마감" if close_time and close_time <= now()
+            else "미마감"
+        ),
+        "공고명": row["bidNtceNm"],
+        "공고기관": row["ntceInsttNm"],
+        "입찰마감": row["bidClseDt"],
+        "추정가격(원)": price,
+        "판단 과정": row.get("thought_process", ""),
+        "판단 이유": row["reason"],
+        "참고 실적": " / ".join(row["ref_titles"]),
+        "확인사항": row["check"],
+        "공고 링크": (
+            link if link.startswith(("https://", "http://"))
+            else ""
+        ),
+        "공고번호": row["bidNtceNo"],
+        "공고차수": row["bidNtceOrd"],
+    })
+
+if result:
+    table = pd.DataFrame(result)
+    pending = int((table["분류"] == "미분석").sum())
+
+    if pending:
+        st.warning(
+            f"부분 분석: 미분석 {pending}건. "
+            "미분석은 제외 판정이 아닙니다."
+        )
+
+    tabs = st.tabs(
+        ["추천 후보", "검토 필요", "미분석", "관련 낮음"]
+    )
+    groups = [
+        LABELS[:2], [LABELS[2]], ["미분석"], [LABELS[3]]
+    ]
+
+    for tab, group in zip(tabs, groups):
+        with tab:
+            part = table[table["분류"].isin(group)]
+            st.caption(
+                f"{len(part)}건 · 실제 입찰자격은 공고문 확인 필요"
+            )
+            st.dataframe(
+                part,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "추정가격(원)": st.column_config.NumberColumn(
+                        format="%d",
+                    ),
+                    "공고 링크": st.column_config.LinkColumn(
+                        display_text="열기"
+                    ),
+                    "판단 과정": st.column_config.TextColumn(
+                        width="large"
+                    ),
+                    "판단 이유": st.column_config.TextColumn(
+                        width="large"
+                    )
+                },
+            )
+
+    st.download_button(
+        "전체 결과 CSV 저장",
+        table.to_csv(index=False).encode("utf-8-sig"),
+        "용역추천.csv",
+        "text/csv",
+    )
+else:
+    st.info(
+        "수집 범위 안에서 마감일이 확인되는 미마감 용역이 없습니다."
+    )
+
+if snapshot["unknown"]:
+    with st.expander(
+        f"마감일 확인 필요: {len(snapshot['unknown'])}건"
+    ):
+        st.dataframe(
+            pd.DataFrame(snapshot["unknown"])[
+                ["bidNtceNm", "ntceInsttNm", "bidClseDt"]
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
