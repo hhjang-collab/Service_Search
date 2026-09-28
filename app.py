@@ -449,7 +449,7 @@ def render(frame):
             name = '<span class="tag-new">NEW</span>' + name
         if r["_지역제한"]:
             name += (
-                '<span class="tag-rgn" title="참가가능지역: '
+                '<span class="tag-rgn" title="'
                 f'{html.escape(r["_지역제한"], quote=True)}">'
                 f'지역제한</span>'
             )
