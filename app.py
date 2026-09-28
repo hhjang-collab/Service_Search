@@ -451,7 +451,7 @@ def render(frame):
             name += (
                 '<span class="tag-rgn" title="참가가능지역: '
                 f'{html.escape(r["_지역제한"], quote=True)}">'
-                f'지역제한 {html.escape(short_regions(r["_지역제한"]))}</span>'
+                f'지역제한</span>'
             )
         close = html.escape(str(r["입찰마감"]))
         if pd.notna(r["_남은일"]):
@@ -516,7 +516,7 @@ table = table.sort_values(
 # --- 🔍 검색·필터 ---
 c1, c2, c3 = st.columns([3, 3, 1.3])
 query = c1.text_input(
-    "🔍 검색", placeholder="공고명·공고기관 (띄어쓰기로 여러 단어 검색)"
+    "🔍 검색", placeholder="공고명, 공고기관 등"
 )
 low, high = c2.select_slider(
     "💰 추정가격",
@@ -537,12 +537,7 @@ if (low, high) != (PRICE_STEPS[0], PRICE_STEPS[-1]):
 if only_new:
     shown = shown[shown["_새공고"]]
 
-st.caption(
-    f"검색 결과 {len(shown)}건 · "
-    "NEW: 직전 영업일 이후 등록 · "
-    f"빨간 마감일: {SOON_DAYS}일 이내 마감 · "
-    "지역제한: 서울 업체 참가 불가(공동수급 가능 여부는 공고문 확인)"
-)
+st.caption(f"검색 결과 {len(shown)}건")
 if shown.empty:
     st.info("조건에 맞는 공고가 없습니다.")
 else:
