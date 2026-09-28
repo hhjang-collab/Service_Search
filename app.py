@@ -440,7 +440,6 @@ try:
         key: str(st.secrets.get(key, "")).strip()
         for key in [
             "APP_PASSWORD", "G2B_API_KEY", "GEMINI_API_KEY",
-            "SUPABASE_URL", "SUPABASE_SECRET_KEY",
         ]
     }
 except FileNotFoundError:
@@ -668,8 +667,8 @@ try:
     snapshot = state[0]["snapshot"] if state else None
 except Exception:
     st.error(
-        "공유 목록을 읽지 못했습니다. "
-        "Supabase 설정을 확인해주세요."
+        "임시 저장 목록을 읽지 못했습니다. "
+        "앱을 새로고침해주세요."
     )
     st.stop()
 
