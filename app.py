@@ -233,13 +233,7 @@ with st.sidebar:
         """ + HR.replace("margin-top: 15px", "margin-top: 10px"),
         unsafe_allow_html=True,
     )
-    st.markdown("### 🔎 조회 기준")
-    st.caption(f"공고 등록일 기준 최근 {DAYS}일을 조회합니다.")
-    st.caption("수의계약 공고는 제외합니다.")
-    st.markdown(HR, unsafe_allow_html=True)
-    if st.button("🚪 로그아웃", use_container_width=True):
-        st.session_state.clear()
-        st.rerun()
+    # 조회 현황·필터·표시 안내·로그아웃은 아래 '사이드바' 부분에서 이어서 그림
 
 try:
     PROFILE_TEXT = core.load_profile(
@@ -395,22 +389,60 @@ if st.button("🔄 나라장터 입찰공고 조회", type="primary"):
             status.empty()
             bar.empty()
 
-# ---------------------------------------------------------------- 결과
+# ---------------------------------------------------------------- 사이드바
 
 snapshot = shared()[0]["snapshot"]
+
+
+def short_date(value):
+    """'2026-09-22' → '09-22'"""
+    return str(value)[5:10] if len(str(value)) >= 10 else str(value)
+
+
+with st.sidebar:
+    st.markdown("### 📅 조회 현황")
+    if snapshot:
+        st.caption(
+            f"마지막 저장: {snapshot['at'][5:16].replace('T', ' ')}  \n"
+            f"수집 기간: {short_date(snapshot['scope'][0])} ~ "
+            f"{short_date(snapshot['scope'][1])}  \n"
+            "다음 자동 조회: 평일 오전 7:30  \n"
+            f"(공고 등록일 기준 최근 {DAYS}일 · 수의계약 제외)"
+        )
+        if snapshot.get("region_error"):
+            st.caption("⚠️ 지역제한 정보를 불러오지 못했습니다.")
+    else:
+        st.caption("아직 저장된 목록이 없습니다.")
+    st.markdown(HR, unsafe_allow_html=True)
+
+    st.markdown("### 🔍 필터")
+    only_new = st.toggle("✨ 새 공고만")
+    no_region = st.toggle("🚫 지역제한 제외")
+    st.markdown(HR, unsafe_allow_html=True)
+
+    st.markdown("### 🔣 표시 안내")
+    badges = " ".join(v for k, v in sorted(BADGE.items(), reverse=True)
+                      if k >= MIN_SCORE)
+    st.markdown(
+        '<div style="font-size: 13px; line-height: 2; opacity: .85;">'
+        f"{badges} &nbsp;관련도 높은 순<br>"
+        '<span class="tag-new">NEW</span>직전 영업일 이후 등록<br>'
+        '<span class="tag-rgn" style="margin-left:0;margin-right:6px">'
+        "지역제한</span>서울 업체 참가 불가<br>"
+        f'<span class="soon">빨간 마감일</span> &nbsp;{SOON_DAYS}일 이내 마감'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(HR, unsafe_allow_html=True)
+    if st.button("🚪 로그아웃", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+
+# ---------------------------------------------------------------- 결과
+
 if not snapshot:
     st.info("아직 저장된 목록이 없습니다. 조회 버튼을 눌러주세요.")
     st.stop()
-
-st.caption(
-    f"마지막 저장: {snapshot['at'][:16].replace('T', ' ')} (한국시간) · "
-    f"수집 기간: {' ~ '.join(snapshot['scope'])}"
-)
-if snapshot.get("region_error"):
-    st.caption(
-        "⚠️ 참가가능지역 정보를 불러오지 못해 지역제한 표시가 빠졌습니다. "
-        f"({snapshot['region_error']})"
-    )
 if snapshot["profile"] != PROFILE_HASH:
     st.warning(
         "실적 자료나 판단 기준이 바뀌었습니다. "
@@ -423,6 +455,17 @@ if counts["미분석"]:
     st.warning(
         f"아직 분석하지 않은 공고가 {counts['미분석']}건 남았습니다. "
         "조회 버튼을 다시 눌러 이어서 분석하세요."
+    )
+
+
+WEEKDAY = "월화수목금토일"
+
+
+def short_close(close):
+    """마감일시를 '09-30(수) 12:00' 형식으로."""
+    return (
+        f"{close:%m-%d}({WEEKDAY[close.weekday()]}) {close:%H:%M}"
+        if close else "확인 필요"
     )
 
 
@@ -456,6 +499,7 @@ for r in rows:
         "비고": BADGE[r["score"]],
         "공고번호": f"{r['bidNtceNo']}-{r['bidNtceOrd']}",
         "_마감": close,
+        "_마감표시": short_close(close),
         "_새공고": bool(posted and posted >= since),
         # 본점(서울)이 참가가능지역에 없으면 지역제한
         "_지역제한": (
@@ -468,14 +512,19 @@ table = pd.DataFrame(table)
 
 def render(frame):
     """내용 길이에 딱 맞는 HTML 표(엑셀 열 너비 자동 맞춤과 같은 방식)."""
-    cols = ["공고명", "공고기관", "입찰마감", "추정가격(원)", "공고 링크", "비고"]
+    cols = ["공고명", "공고기관", "입찰마감", "추정가격(원)", "비고"]
     head = "".join(f"<th>{c}</th>" for c in cols)
     body = []
     for _, r in frame.iterrows():
         price = r["추정가격(원)"]
         link = r["공고 링크"]
         full = html.escape(str(r["공고명"]), quote=True)
-        name = f'<span class="nm" title="{full}">{full}</span>'
+        # 공고명을 누르면 나라장터 공고가 새 창으로 열림
+        name = (
+            f'<a class="nm" href="{html.escape(link, quote=True)}" '
+            f'target="_blank" title="{full}">{full}</a>'
+            if link else f'<span class="nm" title="{full}">{full}</span>'
+        )
         if r["_새공고"]:
             name = '<span class="tag-new">NEW</span>' + name
         if r["_지역제한"]:
@@ -484,7 +533,7 @@ def render(frame):
                 f'{html.escape(r["_지역제한"], quote=True)}">'
                 f'지역제한</span>'
             )
-        close = html.escape(str(r["입찰마감"]))
+        close = html.escape(str(r["_마감표시"]))
         if pd.notna(r["_남은일"]):
             left = int(r["_남은일"])
             close = (
@@ -496,10 +545,6 @@ def render(frame):
             html.escape(str(r["공고기관"])),
             close,
             f"{int(price):,}" if pd.notna(price) else "",
-            (
-                f'<a href="{html.escape(link, quote=True)}" '
-                'target="_blank">열기</a>' if link else ""
-            ),
             r["비고"],
         ]
         body.append(
@@ -519,7 +564,9 @@ def render(frame):
         ".g2b .c3{text-align:right;}"
         ".g2b .nm{display:inline-block;max-width:520px;overflow:hidden;"
         "text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;}"
-        ".g2b .c4,.g2b .c5{text-align:center;}"
+        ".g2b .c4{text-align:center;}"
+        ".g2b a.nm{color:inherit;text-decoration:none;}"
+        ".g2b a.nm:hover{color:#FF4B4B;text-decoration:underline;}"
         "</style>"
         f'<div class="g2b"><table><thead><tr>{head}</tr></thead>'
         f'<tbody>{"".join(body)}</tbody></table></div>'
@@ -557,8 +604,6 @@ low, high = c2.select_slider(
     value=(PRICE_STEPS[0], PRICE_STEPS[-1]),
     format_func=won,
 )
-r1, r2, _ = st.columns([0.8, 1, 6])
-only_new = r2.toggle("✨ 새 공고만")
 
 shown = table
 for word in query.split():
@@ -570,8 +615,10 @@ if (low, high) != (PRICE_STEPS[0], PRICE_STEPS[-1]):
     shown = shown[price.notna() & (price >= low) & (price <= high)]
 if only_new:
     shown = shown[shown["_새공고"]]
+if no_region:
+    shown = shown[shown["_지역제한"] == ""]
 
-r1.caption(f"검색 결과 {len(shown)}건")
+st.caption(f"검색 결과 {len(shown)}건")
 if shown.empty:
     st.info("조건에 맞는 공고가 없습니다.")
 else:
