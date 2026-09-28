@@ -139,7 +139,7 @@ st.markdown(THIN_DIVIDER, unsafe_allow_html=True)
 
 def fetch_g2b_data(api_key, keyword, start_date, end_date):
     # 📌 조달청_나라장터 공공데이터포털 API 엔드포인트 (버전에 따라 URL 변경 가능성 있음)
-    url = "https://apis.data.go.kr/1230000/ad/BidPublicInfoService"
+    url = "https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch"
     
     params = {
         "serviceKey": api_key,
@@ -190,7 +190,7 @@ if search_btn:
                         'bidNtceNo': '공고번호',
                         'bidNtceNm': '공고명',
                         'ntceInsttNm': '공고기관',
-                        'dminstNm': '수요기관',
+                        'dminsttNm': '수요기관',
                         'bidNtceDt': '공고일시',
                         'presmptPrce': '추정가격(원)'
                     }
