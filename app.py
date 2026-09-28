@@ -525,7 +525,7 @@ low, high = c2.select_slider(
     format_func=won,
 )
 r1, r2, _ = st.columns([0.8, 1, 6])
-only_new = r2.toggle("🆕 새 공고만")
+only_new = r2.toggle("✨ 새 공고만")
 
 shown = table
 for word in query.split():
