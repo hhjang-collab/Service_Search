@@ -432,7 +432,7 @@ with st.sidebar:
         f"{badges} &nbsp;관련도 높은 순<br>"
         '<span class="tag-new">NEW</span>직전 영업일 이후 등록<br>'
         '<span class="tag-rgn" style="margin-left:0;margin-right:6px">'
-        "지역제한</span>서울 업체 참가 불가<br>"
+        "지역제한</span>기업 지역 제한<br>"
         f'<span class="soon">마감일</span> &nbsp;{SOON_DAYS}일 이내 마감'
         "</div>",
         unsafe_allow_html=True,
