@@ -21,7 +21,7 @@ KST = ZoneInfo("Asia/Seoul")
 # 관련도 점수별 표시(화면에는 색만 보임)
 BADGE = {5: "🟢", 4: "🟡", 3: "⚪"}
 BATCH_SIZE = 60   # AI 한 번 요청에 보내는 공고 수
-WORKERS = 4       # 동시에 보내는 AI 요청 수
+RATE_LIMITED = [0]  # 이번 조회에서 요청 한도(429)에 걸린 횟수
 
 G2B_URL = (
     "https://apis.data.go.kr/1230000/ad/"
@@ -136,6 +136,8 @@ def call(method, url, name, retries=1, **kwargs):
                 f"{name}: 연결 실패 또는 응답 시간 초과"
             ) from None
 
+        if res.status_code == 429:
+            RATE_LIMITED[0] += 1
         if res.status_code in (429, 500, 502, 503, 504) and not last:
             time.sleep(min(30, 3 * 2 ** attempt))
             continue
@@ -321,9 +323,12 @@ def refresh(status, bar):
     todo = [row for row in rows if row["_key"] not in cache]
     todo = todo[:BATCHES * BATCH_SIZE]
     error, done = None, 0
-    batches = [
-        todo[i:i + BATCH_SIZE] for i in range(0, len(todo), BATCH_SIZE)
-    ]
+    RATE_LIMITED[0] = 0
+    # 묶음 수를 동시 요청 수의 배수로 맞추고 크기를 고르게 나눠
+    # 마지막에 큰 묶음 하나만 혼자 남아 기다리는 일을 줄임
+    count = -(-len(todo) // BATCH_SIZE)
+    count = min(len(todo), -(-count // WORKERS) * WORKERS)
+    batches = [todo[i::count] for i in range(count)] if todo else []
 
     if batches:
         bar.progress(0.0, text=f"AI 검토 중... (0 / {len(todo)}건)")
@@ -378,6 +383,8 @@ if not all(CFG.values()):
 MODEL = str(st.secrets.get("GEMINI_MODEL", "gemini-3.5-flash-lite"))
 DAYS = max(1, min(365, int(st.secrets.get("LOOKBACK_DAYS", 7))))
 BATCHES = max(1, min(30, int(st.secrets.get("AI_BATCHES_PER_CLICK", 20))))
+# 동시에 보내는 AI 요청 수(1~8, 기본 4)
+WORKERS = max(1, min(8, int(st.secrets.get("AI_WORKERS", 4))))
 # 이 점수 이상인 공고만 결과에 표시(3~5, 기본 4)
 MIN_SCORE = max(3, min(5, int(st.secrets.get("MIN_SCORE", 4))))
 
@@ -453,6 +460,12 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
                 st.error(error + " 여기까지 분석한 결과를 표시합니다.")
             else:
                 st.success("공유 목록을 갱신했습니다.")
+            if RATE_LIMITED[0]:
+                st.info(
+                    f"AI 요청 한도에 {RATE_LIMITED[0]}번 걸려 기다렸다가 "
+                    "다시 보냈습니다. 자주 보이면 Secrets의 AI_WORKERS를 "
+                    "줄여주세요."
+                )
         except RuntimeError as exc:
             st.error(f"{exc} 마지막 저장 목록을 표시합니다.")
         except Exception:
