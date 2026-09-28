@@ -209,7 +209,7 @@ def collect(status):
             page += 1
         cursor = stop + timedelta(days=1)
 
-    active, unknown, private = [], [], 0
+    active, private = [], 0
     cutoff = now()
     for row in latest.values():
         if "취소" in str(row.get("ntceKindNm", "")):
@@ -219,12 +219,11 @@ def collect(status):
             continue
         item = {key: row.get(key, "") for key in FIELDS}
         close = deadline(item["bidClseDt"])
-        if close is None:
-            unknown.append(item)
-        elif close > cutoff:
+        # 마감일을 알 수 없는 공고도 AI 분류에 포함(결과에 '확인 필요' 표시)
+        if close is None or close > cutoff:
             active.append(item)
 
-    return active, unknown, private, [str(start), str(end)]
+    return active, private, [str(start), str(end)]
 
 
 # ---------------------------------------------------------------- AI 분류
@@ -284,7 +283,7 @@ def classify(batch):
 
 def refresh(status, bar):
     state, _ = shared()
-    rows, unknown, private, scope = collect(status)
+    rows, private, scope = collect(status)
 
     for row in rows:
         row["_key"] = digest([
@@ -318,7 +317,6 @@ def refresh(status, bar):
         "scope": scope,
         "profile": PROFILE_HASH,
         "private": private,
-        "unknown": unknown,
         "rows": [
             {**row, **cache.get(
                 row["_key"], {"label": "미분석", "reason": ""}
@@ -470,7 +468,9 @@ table = pd.DataFrame([
     {
         "공고명": r["bidNtceNm"],
         "공고기관": r["ntceInsttNm"],
-        "입찰마감": r["bidClseDt"],
+        "입찰마감": (
+            r["bidClseDt"] if deadline(r["bidClseDt"]) else "확인 필요"
+        ),
         "추정가격(원)": pd.to_numeric(r["presmptPrce"], errors="coerce"),
         "공고 링크": (
             r["bidNtceDtlUrl"]
@@ -483,7 +483,8 @@ table = pd.DataFrame([
     }
     for r in rows
     if r["label"] in BADGE
-    and (deadline(r["bidClseDt"]) or cutoff) > cutoff
+    and (deadline(r["bidClseDt"]) is None
+         or deadline(r["bidClseDt"]) > cutoff)
 ])
 
 if table.empty:
@@ -513,17 +514,3 @@ else:
         "용역추천.csv",
         "text/csv",
     )
-
-if snapshot["unknown"]:
-    with st.expander(f"마감일 확인 필요: {len(snapshot['unknown'])}건"):
-        st.dataframe(
-            pd.DataFrame(snapshot["unknown"])[
-                ["bidNtceNm", "ntceInsttNm", "bidClseDt"]
-            ].rename(columns={
-                "bidNtceNm": "공고명",
-                "ntceInsttNm": "공고기관",
-                "bidClseDt": "입찰마감",
-            }),
-            hide_index=True,
-            use_container_width=True,
-        )
