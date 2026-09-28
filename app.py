@@ -18,7 +18,7 @@ st.set_page_config(page_title="나라장터 용역 추천", layout="wide")
 
 KST = ZoneInfo("Asia/Seoul")
 LABELS = ["추천", "검토 필요", "관련 낮음"]
-BADGE = {"추천": "🟢 추천", "검토 필요": "🟡 검토 필요"}
+BADGE = {"추천": "🟢", "검토 필요": "🟡"}
 BATCH_SIZE = 30
 
 G2B_URL = (
@@ -74,7 +74,7 @@ RULES = """
 IT 구축 실적이 일부 있어도 모든 개발·장비·현장운영 역량을
 보유했다고 추정하지 않는다.
 
-공고마다 label과 한 문장짜리 이유(reason)를 한국어로 작성한다.
+공고마다 label만 반환한다.
 모든 입력 공고를 정확히 한 번씩 반환하고, id는 입력값만 사용한다.
 """
 
@@ -85,9 +85,8 @@ SCHEMA = {
         "properties": {
             "id": {"type": "STRING"},
             "label": {"type": "STRING", "enum": LABELS},
-            "reason": {"type": "STRING"},
         },
-        "required": ["id", "label", "reason"],
+        "required": ["id", "label"],
     },
 }
 
@@ -295,10 +294,7 @@ def classify(batch):
         except (KeyError, ValueError, TypeError):
             continue
         if 0 <= index < len(batch) and row.get("label") in LABELS:
-            out[batch[index]["_key"]] = {
-                "label": row["label"],
-                "reason": str(row.get("reason", "")),
-            }
+            out[batch[index]["_key"]] = {"label": row["label"]}
     return out
 
 
@@ -340,7 +336,7 @@ def refresh(status, bar):
         "private": private,
         "rows": [
             {**row, **cache.get(
-                row["_key"], {"label": "미분석", "reason": ""}
+                row["_key"], {"label": "미분석"}
             )}
             for row in rows
         ],
@@ -473,11 +469,6 @@ counts = {
     label: sum(r["label"] == label for r in rows)
     for label in LABELS + ["미분석"]
 }
-st.caption(
-    f"추천 {counts['추천']}건 · 검토 필요 {counts['검토 필요']}건 · "
-    f"관련 낮음 {counts['관련 낮음']}건 · "
-    f"수의계약 제외 {snapshot['private']}건"
-)
 if counts["미분석"]:
     st.warning(
         f"아직 분석하지 않은 공고가 {counts['미분석']}건 남았습니다. "
@@ -499,7 +490,6 @@ table = pd.DataFrame([
             else ""
         ),
         "비고": BADGE[r["label"]],
-        "판단 이유": r["reason"],
         "공고번호": f"{r['bidNtceNo']}-{r['bidNtceOrd']}",
     }
     for r in rows
@@ -543,7 +533,7 @@ def render(frame):
         "background:var(--background-color,#fff);"
         "border-bottom:2px solid rgba(128,128,128,.5);}"
         ".g2b .c3{text-align:right;}"
-        ".g2b .c4{text-align:center;}"
+        ".g2b .c4,.g2b .c5{text-align:center;}"
         "</style>"
         f'<div class="g2b"><table><thead><tr>{head}</tr></thead>'
         f'<tbody>{"".join(body)}</tbody></table></div>'
@@ -551,16 +541,11 @@ def render(frame):
 
 
 if table.empty:
-    st.info("추천·검토 필요로 분류된 미마감 용역이 없습니다.")
+    st.info("검색 결과 0건")
 else:
-    view = st.radio(
-        "보기", ["전체", "🟢 추천", "🟡 검토 필요"],
-        horizontal=True, label_visibility="collapsed",
-    )
     table = table.sort_values(["비고", "입찰마감"], ascending=[False, True])
-    shown = table if view == "전체" else table[table["비고"] == view]
-    st.caption(f"{len(shown)}건")
-    st.markdown(render(shown), unsafe_allow_html=True)
+    st.caption(f"검색 결과 {len(table)}건")
+    st.markdown(render(table), unsafe_allow_html=True)
 
     csv = table.copy()
     csv["추정가격(원)"] = csv["추정가격(원)"].map(
