@@ -70,6 +70,12 @@ st.markdown(
         vertical-align: 1px;
     }
     .soon { color: #E03131; font-weight: 700; }
+    .tag-rgn {
+        display: inline-block; margin-left: 6px; padding: 0 6px;
+        border-radius: 4px; border: 1px solid #F08C00; color: #E67700;
+        font-size: 11px; font-weight: 700; line-height: 16px;
+        vertical-align: 1px; cursor: help;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -90,6 +96,27 @@ if _LOGO.exists():
 # 관련도 점수별 표시(화면에는 색만 보임)
 BADGE = {5: "🟢", 4: "🟡", 3: "⚪"}
 SOON_DAYS = 3  # 마감까지 이 일수 이내면 빨간색으로 표시
+# 참가가능지역 표시용 줄임말
+SHORT_REGION = {
+    "서울": "서울", "부산": "부산", "대구": "대구", "인천": "인천",
+    "광주": "광주", "대전": "대전", "울산": "울산", "세종": "세종",
+    "경기": "경기", "강원": "강원", "충청북": "충북", "충북": "충북",
+    "충청남": "충남", "충남": "충남", "전라북": "전북", "전북": "전북",
+    "전라남": "전남", "전남": "전남", "경상북": "경북", "경북": "경북",
+    "경상남": "경남", "경남": "경남", "제주": "제주",
+}
+
+
+def short_regions(text):
+    names = []
+    for part in str(text).split(","):
+        part = part.strip()
+        name = next(
+            (v for k, v in SHORT_REGION.items() if part.startswith(k)), part
+        )
+        if name not in names:
+            names.append(name)
+    return "·".join(names)
 # 추정가격 필터 눈금(원)
 PRICE_STEPS = [
     0, 20_000_000, 50_000_000, 100_000_000, 300_000_000,
@@ -349,6 +376,11 @@ st.caption(
     f"마지막 저장: {snapshot['at'][:16].replace('T', ' ')} (한국시간) · "
     f"수집 기간: {' ~ '.join(snapshot['scope'])}"
 )
+if snapshot.get("region_error"):
+    st.caption(
+        "⚠️ 참가가능지역 정보를 불러오지 못해 지역제한 표시가 빠졌습니다. "
+        f"({snapshot['region_error']})"
+    )
 if snapshot["profile"] != PROFILE_HASH:
     st.warning(
         "이전 실적자료·모델·판단 기준으로 분석된 목록입니다. "
@@ -380,6 +412,7 @@ for r in rows:
         continue
     posted = core.deadline(r.get("bidNtceDt", ""))
     left = (close.date() - cutoff.date()).days if close else None
+    region = str(r.get("rgnLmt") or "")
     table.append({
         "공고명": r["bidNtceNm"],
         "공고기관": r["ntceInsttNm"],
@@ -394,6 +427,10 @@ for r in rows:
         "공고번호": f"{r['bidNtceNo']}-{r['bidNtceOrd']}",
         "_마감": close,
         "_새공고": bool(posted and posted >= since),
+        # 본점(서울)이 참가가능지역에 없으면 지역제한
+        "_지역제한": (
+            region if region and core.HOME_REGION not in region else ""
+        ),
         "_남은일": left if left is not None and left <= SOON_DAYS else None,
     })
 table = pd.DataFrame(table)
@@ -410,6 +447,12 @@ def render(frame):
         name = html.escape(str(r["공고명"]))
         if r["_새공고"]:
             name = '<span class="tag-new">NEW</span>' + name
+        if r["_지역제한"]:
+            name += (
+                '<span class="tag-rgn" title="참가가능지역: '
+                f'{html.escape(r["_지역제한"], quote=True)}">'
+                f'지역제한 {html.escape(short_regions(r["_지역제한"]))}</span>'
+            )
         close = html.escape(str(r["입찰마감"]))
         if pd.notna(r["_남은일"]):
             left = int(r["_남은일"])
@@ -497,14 +540,16 @@ if only_new:
 st.caption(
     f"검색 결과 {len(shown)}건 · "
     "NEW: 직전 영업일 이후 등록 · "
-    f"빨간 마감일: {SOON_DAYS}일 이내 마감"
+    f"빨간 마감일: {SOON_DAYS}일 이내 마감 · "
+    "지역제한: 서울 업체 참가 불가(공동수급 가능 여부는 공고문 확인)"
 )
 if shown.empty:
     st.info("조건에 맞는 공고가 없습니다.")
 else:
     st.markdown(render(shown), unsafe_allow_html=True)
 
-    csv = shown.drop(columns=[c for c in shown.columns if c.startswith("_")])
+    csv = shown.assign(지역제한=shown["_지역제한"])
+    csv = csv.drop(columns=[c for c in csv.columns if c.startswith("_")])
     csv["추정가격(원)"] = csv["추정가격(원)"].map(
         lambda v: f"{int(v):,}" if pd.notna(v) else ""
     )
