@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
@@ -19,7 +20,8 @@ st.set_page_config(page_title="나라장터 용역 추천", layout="wide")
 KST = ZoneInfo("Asia/Seoul")
 LABELS = ["추천", "검토 필요", "관련 낮음"]
 BADGE = {"추천": "🟢", "검토 필요": "🟡"}
-BATCH_SIZE = 30
+BATCH_SIZE = 60   # AI 한 번 요청에 보내는 공고 수
+WORKERS = 4       # 동시에 보내는 AI 요청 수
 
 G2B_URL = (
     "https://apis.data.go.kr/1230000/ad/"
@@ -132,7 +134,7 @@ def call(method, url, name, retries=1, **kwargs):
             ) from None
 
         if res.status_code in (429, 500, 502, 503, 504) and not last:
-            time.sleep(2 ** attempt + 1)
+            time.sleep(min(30, 3 * 2 ** attempt))
             continue
 
         if not res.ok:
@@ -259,7 +261,7 @@ def classify(batch):
         for i, row in enumerate(batch, 1)
     ]
     data = call(
-        "POST", GEMINI_URL.format(MODEL), "Gemini", retries=4,
+        "POST", GEMINI_URL.format(MODEL), "Gemini", retries=5,
         headers={"x-goog-api-key": CFG["GOOGLE_API_KEY"]},
         json={
             "systemInstruction": {"parts": [{"text": RULES}]},
@@ -270,7 +272,7 @@ def classify(batch):
             "generationConfig": {
                 "responseMimeType": "application/json",
                 "responseSchema": SCHEMA,
-                "maxOutputTokens": 8192,
+                "maxOutputTokens": 16384,
             },
         },
     ).json()
@@ -314,19 +316,26 @@ def refresh(status, bar):
 
     todo = [row for row in rows if row["_key"] not in cache]
     todo = todo[:BATCHES * BATCH_SIZE]
-    error = None
+    error, done = None, 0
+    batches = [
+        todo[i:i + BATCH_SIZE] for i in range(0, len(todo), BATCH_SIZE)
+    ]
 
-    for offset in range(0, len(todo), BATCH_SIZE):
-        done = min(offset + BATCH_SIZE, len(todo))
-        bar.progress(
-            done / len(todo),
-            text=f"AI 검토 중... ({offset + 1} ~ {done} / {len(todo)}건)",
-        )
-        try:
-            cache.update(classify(todo[offset:offset + BATCH_SIZE]))
-        except RuntimeError as exc:
-            error = str(exc)
-            break
+    if batches:
+        bar.progress(0.0, text=f"AI 검토 중... (0 / {len(todo)}건)")
+        # 여러 묶음을 동시에 보내 대기 시간을 줄임
+        with ThreadPoolExecutor(WORKERS) as pool:
+            jobs = {pool.submit(classify, b): len(b) for b in batches}
+            for job in as_completed(jobs):
+                try:
+                    cache.update(job.result())
+                except RuntimeError as exc:
+                    error = str(exc)
+                done += jobs[job]
+                bar.progress(
+                    done / len(todo),
+                    text=f"AI 검토 중... ({done} / {len(todo)}건)",
+                )
 
     # 실패해도 여기까지 분석한 결과는 목록에 반영
     state["snapshot"] = {
@@ -364,7 +373,7 @@ if not all(CFG.values()):
 
 MODEL = str(st.secrets.get("GEMINI_MODEL", "gemini-3.5-flash-lite"))
 DAYS = max(1, min(365, int(st.secrets.get("LOOKBACK_DAYS", 7))))
-BATCHES = max(1, min(30, int(st.secrets.get("AI_BATCHES_PER_CLICK", 5))))
+BATCHES = max(1, min(30, int(st.secrets.get("AI_BATCHES_PER_CLICK", 20))))
 
 if not st.session_state.get("authenticated"):
     st.warning("🔒 비밀번호를 입력해주세요.")
@@ -543,7 +552,11 @@ def render(frame):
 if table.empty:
     st.info("검색 결과 0건")
 else:
-    table = table.sort_values(["비고", "입찰마감"], ascending=[False, True])
+    # 입찰마감이 빠른 순, 마감일을 알 수 없는 공고('확인 필요')는 맨 끝
+    table["_마감"] = pd.to_datetime(table["입찰마감"].map(deadline), utc=True)
+    table = table.sort_values(
+        "_마감", na_position="last", kind="stable"
+    ).drop(columns="_마감")
     st.caption(f"검색 결과 {len(table)}건")
     st.markdown(render(table), unsafe_allow_html=True)
 
