@@ -383,7 +383,7 @@ if snapshot.get("region_error"):
     )
 if snapshot["profile"] != PROFILE_HASH:
     st.warning(
-        "이전 실적자료·모델·판단 기준으로 분석된 목록입니다. "
+        "실적 자료나 판단 기준이 바뀌었습니다. "
         "조회 버튼으로 갱신해주세요."
     )
 
