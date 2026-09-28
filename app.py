@@ -40,11 +40,19 @@ st.markdown(
         display: flex; align-items: center; justify-content: center;
     }
     .busy-card {
-        width: min(420px, calc(100vw - 32px));
+        width: min(420px, calc(100vw - 32px)); height: 300px;
+        box-sizing: border-box;
         background: #fff; color: #31333F; border-radius: 14px;
-        padding: 28px 28px 22px; text-align: center;
+        padding: 28px 28px 70px; text-align: center;
         box-shadow: 0 12px 40px rgba(0, 0, 0, .25);
     }
+    /* 취소 버튼: 안내 창 아래쪽 가운데에 겹쳐 표시 */
+    .st-key-cancel_refresh {
+        position: fixed; z-index: 1000000;
+        top: calc(50% + 92px); left: 50%; transform: translateX(-50%);
+        width: 120px !important;
+    }
+    .st-key-cancel_refresh button { width: 120px; }
     .busy-spin {
         width: 38px; height: 38px; margin: 0 auto 14px;
         border: 4px solid rgba(49, 51, 63, .15);
@@ -288,10 +296,19 @@ class Busy:
     """
 
     def __init__(self):
+        # 취소 버튼(누르면 진행 중인 조회가 멈추고 이전 목록이 그대로 보임)
+        self.cancel_box = st.empty()
+        self.cancel_box.button(
+            "취소", key="cancel_refresh", on_click=self.on_cancel
+        )
         self.box = st.empty()
         self.step = "나라장터에 접속하고 있습니다..."
         self.pct = None
         self.show()
+
+    @staticmethod
+    def on_cancel():
+        st.session_state["refresh_cancelled"] = True
 
     def show(self):
         bar = ""
@@ -308,8 +325,8 @@ class Busy:
             '<div class="busy-title">나라장터 공고를 조회하고 있습니다</div>'
             f'<div class="busy-step">{html.escape(self.step)}</div>'
             f"{bar}"
-            '<div class="busy-note">창을 닫거나 새로고침하지 마세요.<br>'
-            "새 공고가 많으면 몇 분 걸릴 수 있습니다.</div>"
+            '<div class="busy-note">새 공고가 많으면 몇 분 걸릴 수 있습니다.<br>'
+            "취소하면 조회 전 목록이 그대로 유지됩니다.</div>"
             "</div></div>",
             unsafe_allow_html=True,
         )
@@ -322,11 +339,22 @@ class Busy:
         self.step, self.pct = text or self.step, value
         self.show()
 
+    def tick(self):
+        """AI 응답을 기다리는 동안 1초마다 호출(취소 버튼 확인 기회)."""
+        self.show()
+
+    def hide_cancel(self):
+        self.cancel_box.empty()
+
     def empty(self):
+        self.cancel_box.empty()
         self.box.empty()
 
 
 restore()
+
+if st.session_state.pop("refresh_cancelled", False):
+    st.info("조회를 취소했습니다. 조회 전 목록을 그대로 표시합니다.")
 
 if st.button("🔄 나라장터 입찰공고 조회", type="primary"):
     state, lock = shared()
@@ -336,6 +364,8 @@ if st.button("🔄 나라장터 입찰공고 조회", type="primary"):
         status = bar = Busy()
         try:
             snap, cache, error = core.refresh(state["cache"], status, bar)
+            # 여기부터는 저장 단계라 취소 불가(목록과 시트가 어긋나지 않게)
+            status.hide_cancel()
             state["snapshot"], state["cache"] = snap, cache
             if core.sheets_enabled():
                 status.caption("조회 결과를 구글 시트에 저장하고 있습니다...")

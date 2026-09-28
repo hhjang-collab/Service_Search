@@ -6,7 +6,7 @@
 import hashlib
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
@@ -595,18 +595,32 @@ def refresh(cache, status, bar):
     if batches:
         bar.progress(0.0, text=f"AI 검토 중... (0 / {len(todo)}건)")
         # 여러 묶음을 동시에 보내 대기 시간을 줄임
-        with ThreadPoolExecutor(WORKERS) as pool:
+        pool = ThreadPoolExecutor(WORKERS)
+        tick = getattr(bar, "tick", None)  # 앱 화면만 있음(취소 확인용)
+        try:
             jobs = {pool.submit(classify, b): len(b) for b in batches}
-            for job in as_completed(jobs):
-                try:
-                    cache.update(job.result())
-                except RuntimeError as exc:
-                    error = str(exc)
-                done += jobs[job]
-                bar.progress(
-                    done / len(todo),
-                    text=f"AI 검토 중... ({done} / {len(todo)}건)",
+            pending = set(jobs)
+            while pending:
+                # 1초마다 깨어나 화면을 갱신해야 취소 버튼이 바로 반영됨
+                finished, pending = wait(
+                    pending, timeout=1, return_when=FIRST_COMPLETED
                 )
+                for job in finished:
+                    try:
+                        cache.update(job.result())
+                    except RuntimeError as exc:
+                        error = str(exc)
+                    done += jobs[job]
+                if finished:
+                    bar.progress(
+                        done / len(todo),
+                        text=f"AI 검토 중... ({done} / {len(todo)}건)",
+                    )
+                elif tick:
+                    tick()
+        finally:
+            # 취소되면 아직 보내지 않은 요청은 버리고 기다리지 않음
+            pool.shutdown(wait=False, cancel_futures=True)
 
     # 실패해도 여기까지 분석한 결과는 목록에 반영
     snapshot = {
