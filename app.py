@@ -349,7 +349,7 @@ if st.button("🔄 나라장터 입찰공고 조회", type="primary"):
             if error:
                 st.error(error + " 여기까지 분석한 결과를 표시합니다.")
             else:
-                st.success("공유 목록을 갱신했습니다.")
+                st.success("목록을 갱신했습니다.")
             if core.RATE_LIMITED[0]:
                 st.info(
                     f"AI 요청 한도에 {core.RATE_LIMITED[0]}번 걸려 기다렸다가 "
