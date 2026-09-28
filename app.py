@@ -2,7 +2,6 @@ import base64
 import hashlib
 import hmac
 import json
-import re  
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -96,6 +95,7 @@ def http(method, url, name, **kwargs):
             except (ValueError, AttributeError):
                 pass
 
+            # 오류 문구에 인증키가 포함되면 숨김
             for key_name in ["GOOGLE_API_KEY", "G2B_API_KEY"]:
                 secret_value = CFG.get(key_name, "")
                 if secret_value:
@@ -139,15 +139,18 @@ def db(method="GET", body=None, filters=None):
             else None
         )
 
+        # 다른 직원이 갱신 중이면 중복 실행 방지
         if "or" in filters:
             if expires is not None and expires >= now():
                 return []
 
+        # 현재 갱신 작업만 저장·잠금 해제 가능
         if "lock_token" in filters:
             expected_token = filters["lock_token"][3:]
             if state["lock_token"] != expected_token:
                 return []
 
+        # 만료된 작업이 새 결과를 덮어쓰는 것을 방지
         if "lock_until" in filters:
             cutoff = datetime.fromisoformat(
                 filters["lock_until"][3:]
@@ -157,7 +160,6 @@ def db(method="GET", body=None, filters=None):
 
         state.update(deepcopy(body or {}))
         return [deepcopy(state)]
-
 
 def save_locked(token, **values):
     result = db(
@@ -243,7 +245,7 @@ def collect(token, status):
     all_rows = []
 
     url = (
-        "[https://apis.data.go.kr/1230000/ad/](https://apis.data.go.kr/1230000/ad/)"
+        "https://apis.data.go.kr/1230000/ad/"
         "BidPublicInfoService/getBidPblancListInfoServc"
     )
 
@@ -319,18 +321,21 @@ def collect(token, status):
     active, unknown = [], []
     cutoff = now()
 
+    # 나라장터 응답에 포함될 수 있는 업무구분명(bizClNm) 추가
     fields = [
         "bidNtceNo", "bidNtceOrd", "bidNtceNm",
         "ntceInsttNm", "dminsttNm", "bidNtceDt",
         "bidClseDt", "presmptPrce", "bidNtceDtlUrl",
         "ntceKindNm", "cntrctCnclsMthdNm", "bidMethdNm",
-        "bizClNm"
+        "bizClNm" 
     ]
 
     for row in latest.values():
+        # 취소 공고 제외
         if "취소" in str(row.get("ntceKindNm", "")):
             continue
             
+        # 명백한 공사/물품 제외 (불필요한 AI 검토 방지)
         biz_type = str(row.get("bizClNm", "")).strip()
         if biz_type in ["공사", "물품", "외자"]:
             continue
@@ -347,52 +352,14 @@ def collect(token, status):
     return active, unknown, [str(start), str(end)]
 
 
-def create_gemini_cache(profile):
-    url = "[https://generativelanguage.googleapis.com/v1beta/cachedContents](https://generativelanguage.googleapis.com/v1beta/cachedContents)"
-    headers = {"x-goog-api-key": CFG["GOOGLE_API_KEY"]}
-    payload = {
-        "model": f"models/{MODEL}",
-        "systemInstruction": {
-            "parts": [{"text": RULES}]
-        },
-        "contents": [{
-            "role": "user",
-            "parts": [{
-                "text": json.dumps({"참고실적": profile}, ensure_ascii=False)
-            }]
-        }],
-        "ttl": "3600s" 
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        if response.ok:
-            return response.json().get("name")
-    except Exception:
-        pass
-    
-    return None
-
-
-def delete_gemini_cache(cache_name):
-    if not cache_name:
-        return
-    url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){cache_name}"
-    headers = {"x-goog-api-key": CFG["GOOGLE_API_KEY"]}
-    try:
-        requests.delete(url, headers=headers, timeout=10)
-    except Exception:
-        pass
-
-
-def classify(batch, profile, cache_name=None):
+def classify(batch, profile):
     schema = {
         "type": "ARRAY",
         "items": {
             "type": "OBJECT",
             "properties": {
                 "id": {"type": "STRING"},
-                "thought_process": {"type": "STRING"},
+                "thought_process": {"type": "STRING"}, # CoT 추론 과정 추가
                 "label": {"type": "STRING", "enum": LABELS},
                 "reason": {"type": "STRING"},
                 "refs": {
@@ -416,45 +383,39 @@ def classify(batch, profile, cache_name=None):
         for row in batch
     ]
 
-    payload = {
-        "generationConfig": {
-            "temperature": 0.1,
-            "responseMimeType": "application/json",
-            "responseSchema": schema,
-            "maxOutputTokens": 8192,
-        }
-    }
-    
-    if cache_name:
-        payload["cachedContent"] = cache_name
-        payload["contents"] = [{
-            "role": "user",
-            "parts": [{
-                "text": json.dumps({"공고": notices}, ensure_ascii=False)
-            }]
-        }]
-    else:
-        payload["systemInstruction"] = {"parts": [{"text": RULES}]}
-        payload["contents"] = [{
-            "role": "user",
-            "parts": [{
-                "text": json.dumps({"참고실적": profile, "공고": notices}, ensure_ascii=False)
-            }]
-        }]
-
+    # Rate Limit 극복을 위한 지수 백오프 (Exponential Backoff) 재시도 로직
     for attempt in range(5):
         try:
             response = http(
                 "POST",
-                f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/)"
+                f"https://generativelanguage.googleapis.com/v1beta/"
                 f"models/{MODEL}:generateContent",
                 "Gemini",
                 headers={"x-goog-api-key": CFG["GOOGLE_API_KEY"]},
-                json=payload,
+                json={
+                    "systemInstruction": {
+                        "parts": [{"text": RULES}]
+                    },
+                    "contents": [{
+                        "parts": [{
+                            "text": json.dumps(
+                                {"참고실적": profile, "공고": notices},
+                                ensure_ascii=False,
+                            )
+                        }]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.1,
+                        "responseMimeType": "application/json",
+                        "responseSchema": schema,
+                        "maxOutputTokens": 8192,
+                    },
+                },
             ).json()
-            break
+            break # 성공 시 루프 탈출
             
         except RuntimeError as e:
+            # 429 Too Many Requests 에러인 경우 대기 후 재시도
             if "429" in str(e) and attempt < 4:
                 time.sleep(2 ** attempt + 1)
                 continue
@@ -463,64 +424,46 @@ def classify(batch, profile, cache_name=None):
     try:
         candidate = response["candidates"][0]
         if candidate.get("finishReason") != "STOP":
-            raise ValueError("생성 중단됨")
+            raise ValueError
 
         text = "".join(
             part.get("text", "")
             for part in candidate["content"]["parts"]
             if not part.get("thought")
-        ).strip()
-
-        # ==========================================
-        # 💡 [수정] 백틱 기호를 직접 쓰지 않고 정규식으로 안전하게 치환
-        # ==========================================
-        text = re.sub(r"^`{3}(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*`{3}$", "", text)
-        
-        # 2. 강제로 배열의 시작('[')과 끝(']') 사이의 텍스트만 추출
-        start_idx = text.find('[')
-        end_idx = text.rfind(']')
-        if start_idx != -1 and end_idx != -1:
-            text = text[start_idx:end_idx+1]
-            
-        try:
-            result = json.loads(text)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"JSON 파싱 실패: {e}")
-        # ==========================================
+        )
+        result = json.loads(text)
 
         wanted = {row["_key"] for row in batch}
         valid_refs = {row["id"] for row in profile}
 
         if not isinstance(result, list) or len(result) != len(wanted):
-            raise ValueError("목록 개수 불일치")
+            raise ValueError
         if {row["id"] for row in result} != wanted:
-            raise ValueError("요청한 공고 ID 불일치")
+            raise ValueError
 
         for row in result:
             if row["label"] not in LABELS:
-                raise ValueError("허용되지 않은 라벨 사용")
+                raise ValueError
             if not isinstance(row["refs"], list):
-                raise ValueError("refs 형식이 리스트가 아닙니다")
+                raise ValueError
             if len(row["refs"]) > 3 or any(
                 type(ref) is not int or ref not in valid_refs
                 for ref in row["refs"]
             ):
-                raise ValueError("참조 실적 ID 에러")
+                raise ValueError
             if not all(
                 isinstance(row[key], str) and row[key].strip()
                 for key in ["thought_process", "reason", "check"]
             ):
-                raise ValueError("필수 텍스트 누락")
+                raise ValueError
             if row["label"] in LABELS[:2] and not row["refs"]:
-                raise ValueError("추천인데 참조 실적이 없음")
+                raise ValueError
 
         return {row["id"]: row for row in result}
 
-    except (ValueError, KeyError, IndexError, TypeError) as e:
-        print(f"AI 응답 파싱 에러 발생: {e}")
+    except (ValueError, KeyError, IndexError, TypeError):
         raise RuntimeError(
-            "AI 응답이 불완전합니다. 잠시 후 다시 시도해 주세요."
+            "AI 응답이 불완전합니다. 다시 조회해주세요."
         ) from None
 
 
@@ -543,7 +486,7 @@ if not all(CFG.values()):
     )
     st.stop()
 
-MODEL = str(st.secrets.get("GEMINI_MODEL", "gemini-1.5-flash"))
+MODEL = str(st.secrets.get("GEMINI_MODEL", "gemini-1.5-flash")) # 모델명 호환성 확인
 DAYS = max(1, min(365, int(st.secrets.get("LOOKBACK_DAYS", 7))))
 BATCHES = max(
     1, min(30, int(st.secrets.get("AI_BATCHES_PER_CLICK", 5)))
@@ -567,7 +510,7 @@ st.title("나라장터 용역 추천")
 
 with st.sidebar:
     st.link_button(
-        "🏠 홈으로", "[https://ip2b-work-tools.streamlit.app/](https://ip2b-work-tools.streamlit.app/)"
+        "🏠 홈으로", "https://ip2b-work-tools.streamlit.app/"
     )
     st.caption(f"공고 등록일 기준 최근 {DAYS}일을 조회합니다.")
     st.caption(
@@ -625,9 +568,8 @@ st.caption(
 if st.button("🔄 용역 조회·갱신", type="primary"):
     token = str(uuid.uuid4())
     status = st.empty()
-    progress_bar = st.empty()
+    progress_bar = st.empty() # 프로그레스 바 추가용 빈 공간
     locked = False
-    active_cache_name = None
 
     try:
         claimed = db(
@@ -667,23 +609,19 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
         todo = [
             row for row in rows if row["_key"] not in cache
         ]
+
         total_todo = len(todo)
         
+        # UI 개선: 시각적인 프로그레스 바 렌더링
         if total_todo > 0:
-            status.caption("데이터 최적화(Context Caching) 시도 중...")
-            active_cache_name = create_gemini_cache(profile)
-            
-            if active_cache_name:
-                status.caption("✅ 비용 절감 및 가속(Cache) 모드로 AI 검토를 시작합니다.")
-            else:
-                status.caption("ℹ️ 데이터가 캐시 최소 요건(약 3만 토큰) 미만이므로 일반 모드로 진행합니다.")
-                
             pb = progress_bar.progress(0, text="AI 검토 준비 중...")
         
         for offset in range(
             0, min(total_todo, BATCHES * 20), 20
         ):
             save_locked(token)
+
+            # 불필요한 고정 대기(time.sleep) 제거 - Rate limit은 http 호출부에서 제어됨
 
             current_batch_size = min(20, total_todo - offset)
             pb.progress(
@@ -692,7 +630,7 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
             )
 
             cache.update(
-                classify(todo[offset:offset + 20], profile, cache_name=active_cache_name)
+                classify(todo[offset:offset + 20], profile)
             )
             save_locked(token, cache=cache)
 
@@ -747,9 +685,6 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
         st.error(message + " 마지막 저장 목록을 표시합니다.")
 
     finally:
-        if active_cache_name:
-            delete_gemini_cache(active_cache_name)
-            
         status.empty()
         progress_bar.empty()
         if locked:
@@ -796,6 +731,7 @@ for row in snapshot["rows"]:
     close_time = deadline(row["bidClseDt"])
     link = str(row.get("bidNtceDtlUrl") or "")
 
+    # 추정가격을 정수형으로 변환 (숫자 포맷팅을 위함)
     try:
         price = int(float(row["presmptPrce"])) if row.get("presmptPrce") else None
     except ValueError:
@@ -811,7 +747,7 @@ for row in snapshot["rows"]:
         "공고기관": row["ntceInsttNm"],
         "입찰마감": row["bidClseDt"],
         "추정가격(원)": price,
-        "판단 과정": row.get("thought_process", ""),
+        "판단 과정": row.get("thought_process", ""), # 새로 추가된 사고과정 컬럼
         "판단 이유": row["reason"],
         "참고 실적": " / ".join(row["ref_titles"]),
         "확인사항": row["check"],
@@ -857,6 +793,7 @@ if result:
                     "공고 링크": st.column_config.LinkColumn(
                         display_text="열기"
                     ),
+                    # 긴 텍스트가 잘 읽히도록 텍스트 컬럼 설정
                     "판단 과정": st.column_config.TextColumn(
                         width="large"
                     ),
