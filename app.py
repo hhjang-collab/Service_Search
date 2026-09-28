@@ -195,6 +195,31 @@ def worksheet(title, cols):
         return book.add_worksheet(title=title, rows=1, cols=cols)
 
 
+def sheet_error(exc):
+    """구글 시트 오류를 원인별 안내 문구로 바꾼다."""
+    name = type(exc).__name__
+    text = str(exc)
+    low = text.lower()
+    if isinstance(exc, ModuleNotFoundError):
+        why = "requirements.txt에 gspread, google-auth를 추가하고 앱을 재시작하세요."
+    elif isinstance(exc, KeyError):
+        why = f"Secrets의 [gcp_service_account]에 {text} 항목이 없습니다."
+    elif "has not been used" in low or "is disabled" in low or "service_disabled" in low:
+        why = "서비스 계정 프로젝트에서 Google Sheets API를 사용 설정하세요."
+    elif name == "SpreadsheetNotFound" or "404" in text:
+        why = "SHEET_ID가 틀렸거나, 시트가 서비스 계정 이메일과 공유되지 않았습니다."
+    elif "403" in text or "permission" in low:
+        why = "시트를 서비스 계정 이메일에 '편집자'로 공유했는지 확인하세요."
+    elif "invalid_grant" in low or "jwt" in low or "private key" in low or "pem" in low:
+        why = ("서비스 계정 키가 잘못됐거나 삭제됐습니다. private_key 값"
+               "(줄바꿈 \\n 포함)을 JSON에서 그대로 옮겼는지 확인하세요.")
+    elif "429" in text or "quota" in low:
+        why = "구글 시트 호출 한도에 걸렸습니다. 잠시 후 다시 시도하세요."
+    else:
+        why = "원인을 알 수 없는 오류입니다."
+    return f"{why} (오류: {name}: {text[:200]})"
+
+
 def save_sheet(snap):
     """최근 목록(분석 점수 포함)과 조회 정보를 시트에 덮어쓴다."""
     rows = [SHEET_COLS] + [
@@ -259,8 +284,9 @@ def restore():
     state["loaded"] = True
     try:
         snap = load_sheet()
-    except Exception:
-        st.warning("구글 시트에서 저장 목록을 읽지 못했습니다.")
+    except Exception as exc:
+        state["loaded"] = False  # 설정을 고치면 다음 새로고침 때 다시 시도
+        st.warning("구글 시트에서 저장 목록을 읽지 못했습니다. " + sheet_error(exc))
         return
     if snap:
         state["snapshot"] = snap
@@ -570,10 +596,10 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
             if sheets_enabled():
                 try:
                     save_sheet(shared()[0]["snapshot"])
-                except Exception:
+                except Exception as exc:
                     st.warning(
                         "구글 시트 저장에 실패했습니다. 이번 결과는 앱이 "
-                        "켜져 있는 동안만 유지됩니다."
+                        "켜져 있는 동안만 유지됩니다. " + sheet_error(exc)
                     )
             if error:
                 st.error(error + " 여기까지 분석한 결과를 표시합니다.")
