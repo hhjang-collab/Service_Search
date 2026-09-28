@@ -400,14 +400,18 @@ def short_date(value):
 
 
 with st.sidebar:
-    st.markdown("### 📅 조회 현황")
+    st.markdown("### 📅 검색 현황")
     if snapshot:
-        st.caption(
-            f"✅마지막 기록: {snapshot['at'][5:16].replace('T', ' ')}  \n"
-            f"✅수집 기간: {short_date(snapshot['scope'][0])} ~ "
-            f"{short_date(snapshot['scope'][1])}  \n"
-            "✅자동 조회: 평일 오전 7:30  \n"
-            f"✅공고 등록일 기준 최근 {DAYS}일 · 수의계약 제외"
+        st.markdown(
+            '<div style="font-size: 13px; line-height: 1.9;">'
+            f"✅ 마지막 저장: {snapshot['at'][5:16].replace('T', ' ')}<br>"
+            f"✅ 수집 기간: {short_date(snapshot['scope'][0])} ~ "
+            f"{short_date(snapshot['scope'][1])}<br>"
+            "✅ 자동 조회: 평일 오전 7:30<br>"
+            f'<span style="opacity: .6;">(공고 등록일 기준 최근 {DAYS}일 · '
+            "수의계약 제외)</span>"
+            "</div>",
+            unsafe_allow_html=True,
         )
         if snapshot.get("region_error"):
             st.caption("⚠️ 지역제한 정보를 불러오지 못했습니다.")
