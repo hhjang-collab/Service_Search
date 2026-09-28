@@ -1,0 +1,28 @@
+name: 나라장터 용역 자동 조회
+
+on:
+  schedule:
+    - cron: "30 22 * * 0-4"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 필요한 패키지 설치
+        run: pip install pandas openpyxl requests gspread google-auth
+      - name: 공고 수집·분석 후 구글 시트 저장
+        run: python daily_job.py
+        env:
+          G2B_API_KEY: ${{ secrets.G2B_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          LOOKBACK_DAYS: ${{ vars.LOOKBACK_DAYS }}
+          AI_WORKERS: ${{ vars.AI_WORKERS }}
