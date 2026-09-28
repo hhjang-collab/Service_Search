@@ -85,9 +85,24 @@ def http(method, url, name, **kwargs):
         ) from None
 
     if not response.ok:
+        detail = ""
+
+        if name == "Gemini":
+            try:
+                detail = str(
+                    response.json().get("error", {}).get("message", "")
+                )
+            except (ValueError, AttributeError):
+                pass
+
+            # 오류 문구에 인증키가 포함되면 숨김
+            for key_name in ["GOOGLE_API_KEY", "G2B_API_KEY"]:
+                secret_value = CFG.get(key_name, "")
+                if secret_value:
+                    detail = detail.replace(secret_value, "[숨김]")
+
         raise RuntimeError(
-            f"{name}: HTTP {response.status_code}. "
-            "키·권한·호출 한도를 확인하세요."
+            f"{name}: HTTP {response.status_code}. {detail[:500]}"
         )
     return response
 
@@ -366,7 +381,7 @@ def classify(batch, profile):
         f"https://generativelanguage.googleapis.com/v1beta/"
         f"models/{MODEL}:generateContent",
         "Gemini",
-        headers={"x-goog-api-key": CFG["GEMINI_API_KEY"]},
+        headers={"x-goog-api-key": CFG["GOOGLE_API_KEY"]},
         json={
             "systemInstruction": {
                 "parts": [{"text": RULES}]
@@ -439,7 +454,7 @@ try:
     CFG = {
         key: str(st.secrets.get(key, "")).strip()
         for key in [
-            "APP_PASSWORD", "G2B_API_KEY", "GEMINI_API_KEY",
+            "APP_PASSWORD", "G2B_API_KEY", "GOOGLE_API_KEY",
         ]
     }
 except FileNotFoundError:
@@ -453,7 +468,7 @@ if not all(CFG.values()):
     )
     st.stop()
 
-MODEL = str(st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash"))
+MODEL = str(st.secrets.get("GEMINI_MODEL", "gemini-3-flash-preview"))
 DAYS = max(1, min(365, int(st.secrets.get("LOOKBACK_DAYS", 7))))
 BATCHES = max(
     1, min(30, int(st.secrets.get("AI_BATCHES_PER_CLICK", 5)))
