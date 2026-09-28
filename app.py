@@ -51,8 +51,8 @@ IT 구축 실적이 일부 있어도 모든 개발, 장비, 현장운영
 참고 실적은 완료를 증명하지 않는다.
 실제 역할, 면허, 인력, 입찰 실적요건 충족을 단정하지 않는다.
 
-각 공고마다 분류, 이유, 참조 실적ID 최대 3개,
-추가 확인사항을 한국어로 작성한다.
+각 공고마다 판단 과정(thought_process)을 먼저 논리적으로 서술한 뒤,
+분류(label), 이유, 참조 실적ID 최대 3개, 추가 확인사항을 한국어로 작성한다.
 
 확장 도전의 이유에는 이전 가능한 역량을,
 확인사항에는 부족하거나 확인해야 할 역량을 적는다.
@@ -244,7 +244,6 @@ def collect(token, status):
     calls = 0
     all_rows = []
 
-    # 키워드 검색 없이 용역 전체를 수집
     url = (
         "https://apis.data.go.kr/1230000/ad/"
         "BidPublicInfoService/getBidPblancListInfoServc"
@@ -308,7 +307,6 @@ def collect(token, status):
 
         cursor = stop + timedelta(days=1)
 
-    # 같은 공고번호는 수집된 가장 높은 차수 사용
     latest = {}
     for row in all_rows:
         key = row.get("bidNtceNo")
@@ -323,15 +321,23 @@ def collect(token, status):
     active, unknown = [], []
     cutoff = now()
 
+    # 나라장터 응답에 포함될 수 있는 업무구분명(bizClNm) 추가
     fields = [
         "bidNtceNo", "bidNtceOrd", "bidNtceNm",
         "ntceInsttNm", "dminsttNm", "bidNtceDt",
         "bidClseDt", "presmptPrce", "bidNtceDtlUrl",
         "ntceKindNm", "cntrctCnclsMthdNm", "bidMethdNm",
+        "bizClNm" 
     ]
 
     for row in latest.values():
+        # 취소 공고 제외
         if "취소" in str(row.get("ntceKindNm", "")):
+            continue
+            
+        # 명백한 공사/물품 제외 (불필요한 AI 검토 방지)
+        biz_type = str(row.get("bizClNm", "")).strip()
+        if biz_type in ["공사", "물품", "외자"]:
             continue
 
         item = {key: row.get(key, "") for key in fields}
@@ -353,6 +359,7 @@ def classify(batch, profile):
             "type": "OBJECT",
             "properties": {
                 "id": {"type": "STRING"},
+                "thought_process": {"type": "STRING"}, # CoT 추론 과정 추가
                 "label": {"type": "STRING", "enum": LABELS},
                 "reason": {"type": "STRING"},
                 "refs": {
@@ -361,7 +368,7 @@ def classify(batch, profile):
                 },
                 "check": {"type": "STRING"},
             },
-            "required": ["id", "label", "reason", "refs", "check"],
+            "required": ["id", "thought_process", "label", "reason", "refs", "check"],
         },
     }
 
@@ -376,32 +383,43 @@ def classify(batch, profile):
         for row in batch
     ]
 
-    response = http(
-        "POST",
-        f"https://generativelanguage.googleapis.com/v1beta/"
-        f"models/{MODEL}:generateContent",
-        "Gemini",
-        headers={"x-goog-api-key": CFG["GOOGLE_API_KEY"]},
-        json={
-            "systemInstruction": {
-                "parts": [{"text": RULES}]
-            },
-            "contents": [{
-                "parts": [{
-                    "text": json.dumps(
-                        {"참고실적": profile, "공고": notices},
-                        ensure_ascii=False,
-                    )
-                }]
-            }],
-            "generationConfig": {
-                "temperature": 0.1,
-                "responseMimeType": "application/json",
-                "responseSchema": schema,
-                "maxOutputTokens": 8192,
-            },
-        },
-    ).json()
+    # Rate Limit 극복을 위한 지수 백오프 (Exponential Backoff) 재시도 로직
+    for attempt in range(5):
+        try:
+            response = http(
+                "POST",
+                f"https://generativelanguage.googleapis.com/v1beta/"
+                f"models/{MODEL}:generateContent",
+                "Gemini",
+                headers={"x-goog-api-key": CFG["GOOGLE_API_KEY"]},
+                json={
+                    "systemInstruction": {
+                        "parts": [{"text": RULES}]
+                    },
+                    "contents": [{
+                        "parts": [{
+                            "text": json.dumps(
+                                {"참고실적": profile, "공고": notices},
+                                ensure_ascii=False,
+                            )
+                        }]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.1,
+                        "responseMimeType": "application/json",
+                        "responseSchema": schema,
+                        "maxOutputTokens": 8192,
+                    },
+                },
+            ).json()
+            break # 성공 시 루프 탈출
+            
+        except RuntimeError as e:
+            # 429 Too Many Requests 에러인 경우 대기 후 재시도
+            if "429" in str(e) and attempt < 4:
+                time.sleep(2 ** attempt + 1)
+                continue
+            raise e
 
     try:
         candidate = response["candidates"][0]
@@ -435,7 +453,7 @@ def classify(batch, profile):
                 raise ValueError
             if not all(
                 isinstance(row[key], str) and row[key].strip()
-                for key in ["reason", "check"]
+                for key in ["thought_process", "reason", "check"]
             ):
                 raise ValueError
             if row["label"] in LABELS[:2] and not row["refs"]:
@@ -468,7 +486,7 @@ if not all(CFG.values()):
     )
     st.stop()
 
-MODEL = str(st.secrets.get("GEMINI_MODEL", "gemini-3-flash-preview"))
+MODEL = str(st.secrets.get("GEMINI_MODEL", "gemini-1.5-flash")) # 모델명 호환성 확인
 DAYS = max(1, min(365, int(st.secrets.get("LOOKBACK_DAYS", 7))))
 BATCHES = max(
     1, min(30, int(st.secrets.get("AI_BATCHES_PER_CLICK", 5)))
@@ -515,7 +533,6 @@ if logo.exists():
         unsafe_allow_html=True,
     )
 
-# 실적 파일에서 필요한 세 항목만 읽기
 try:
     df = pd.read_excel(
         Path(__file__).with_name("experience.xlsx"),
@@ -548,10 +565,10 @@ st.caption(
     "유사 실적과 확장 도전 기회를 함께 검토합니다."
 )
 
-# 버튼을 누른 경우에만 나라장터와 Gemini 호출
 if st.button("🔄 용역 조회·갱신", type="primary"):
     token = str(uuid.uuid4())
     status = st.empty()
+    progress_bar = st.empty() # 프로그레스 바 추가용 빈 공간
     locked = False
 
     try:
@@ -593,23 +610,28 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
             row for row in rows if row["_key"] not in cache
         ]
 
+        total_todo = len(todo)
+        
+        # UI 개선: 시각적인 프로그레스 바 렌더링
+        if total_todo > 0:
+            pb = progress_bar.progress(0, text="AI 검토 준비 중...")
+        
         for offset in range(
-            0, min(len(todo), BATCHES * 20), 20
+            0, min(total_todo, BATCHES * 20), 20
         ):
             save_locked(token)
 
-            if offset:
-                time.sleep(15)
+            # 불필요한 고정 대기(time.sleep) 제거 - Rate limit은 http 호출부에서 제어됨
 
-            status.caption(
-                f"AI 검토 중: 신규·변경 {len(todo)}건 중 "
-                f"{offset + 1}건부터 검토"
+            current_batch_size = min(20, total_todo - offset)
+            pb.progress(
+                (offset + current_batch_size) / total_todo, 
+                text=f"AI 검토 중... ({offset + 1} ~ {offset + current_batch_size} / {total_todo}건)"
             )
 
             cache.update(
                 classify(todo[offset:offset + 20], profile)
             )
-            # 중간 분석 결과도 저장해 다음 조회 때 재사용
             save_locked(token, cache=cache)
 
         output = [
@@ -619,6 +641,7 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
                     row["_key"],
                     {
                         "label": "미분석",
+                        "thought_process": "",
                         "reason": "",
                         "refs": [],
                         "check": "",
@@ -663,6 +686,7 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
 
     finally:
         status.empty()
+        progress_bar.empty()
         if locked:
             try:
                 db(
@@ -676,7 +700,6 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
                     "최대 5분 후 다시 시도해주세요."
                 )
 
-# 접속 시 공용 저장소의 마지막 목록 표시
 try:
     state = db()
     snapshot = state[0]["snapshot"] if state else None
@@ -708,6 +731,12 @@ for row in snapshot["rows"]:
     close_time = deadline(row["bidClseDt"])
     link = str(row.get("bidNtceDtlUrl") or "")
 
+    # 추정가격을 정수형으로 변환 (숫자 포맷팅을 위함)
+    try:
+        price = int(float(row["presmptPrce"])) if row.get("presmptPrce") else None
+    except ValueError:
+        price = None
+
     result.append({
         "분류": row["label"],
         "마감 상태": (
@@ -717,7 +746,8 @@ for row in snapshot["rows"]:
         "공고명": row["bidNtceNm"],
         "공고기관": row["ntceInsttNm"],
         "입찰마감": row["bidClseDt"],
-        "추정가격(원)": row["presmptPrce"],
+        "추정가격(원)": price,
+        "판단 과정": row.get("thought_process", ""), # 새로 추가된 사고과정 컬럼
         "판단 이유": row["reason"],
         "참고 실적": " / ".join(row["ref_titles"]),
         "확인사항": row["check"],
@@ -757,8 +787,18 @@ if result:
                 hide_index=True,
                 use_container_width=True,
                 column_config={
+                    "추정가격(원)": st.column_config.NumberColumn(
+                        format="%d",
+                    ),
                     "공고 링크": st.column_config.LinkColumn(
                         display_text="열기"
+                    ),
+                    # 긴 텍스트가 잘 읽히도록 텍스트 컬럼 설정
+                    "판단 과정": st.column_config.TextColumn(
+                        width="large"
+                    ),
+                    "판단 이유": st.column_config.TextColumn(
+                        width="large"
                     )
                 },
             )
