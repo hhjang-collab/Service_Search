@@ -41,6 +41,7 @@ FIELDS = [
     "bidNtceNo", "bidNtceOrd", "bidNtceNm", "ntceInsttNm",
     "dminsttNm", "bidClseDt", "presmptPrce", "bidNtceDtlUrl",
     "cntrctCnclsMthdNm", "bidNtceDt",
+    "asignBdgtAmt", "VAT",  # 배정예산(부가세 포함 사업금액), 부가가치세
 ]
 
 RULES = """
@@ -122,6 +123,25 @@ def now():
 def digest(value):
     text = json.dumps(value, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def business_amount(row):
+    """부가세 포함 사업금액(원). 없으면 None.
+
+    1순위 배정예산 → 2순위 추정가격+부가세 → 3순위 추정가격×1.1
+    """
+    def num(key):
+        value = pd.to_numeric(row.get(key), errors="coerce")
+        return float(value) if pd.notna(value) and value > 0 else None
+
+    budget, price, vat = num("asignBdgtAmt"), num("presmptPrce"), num("VAT")
+    if budget:
+        return budget
+    if price and vat:
+        return price + vat
+    if price:
+        return round(price * 1.1)
+    return None
 
 
 def deadline(value):

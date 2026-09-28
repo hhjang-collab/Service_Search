@@ -125,7 +125,7 @@ def short_regions(text):
         if name not in names:
             names.append(name)
     return "·".join(names)
-# 추정가격 필터 눈금(원)
+# 사업금액 필터 눈금(원)
 PRICE_STEPS = [
     0, 20_000_000, 50_000_000, 100_000_000, 300_000_000,
     500_000_000, 1_000_000_000, float("inf"),
@@ -490,7 +490,8 @@ for r in rows:
         "공고명": r["bidNtceNm"],
         "공고기관": r["ntceInsttNm"],
         "입찰마감": r["bidClseDt"] if close else "확인 필요",
-        "추정가격(원)": pd.to_numeric(r["presmptPrce"], errors="coerce"),
+        # 부가세 포함 사업금액(배정예산). 없으면 추정가격으로 계산
+        "사업금액(원)": core.business_amount(r),
         "공고 링크": (
             r["bidNtceDtlUrl"]
             if str(r["bidNtceDtlUrl"]).startswith(("https://", "http://"))
@@ -512,11 +513,11 @@ table = pd.DataFrame(table)
 
 def render(frame):
     """내용 길이에 딱 맞는 HTML 표(엑셀 열 너비 자동 맞춤과 같은 방식)."""
-    cols = ["공고명", "공고기관", "입찰마감", "추정가격(원)", "비고"]
+    cols = ["공고명", "공고기관", "입찰마감", "사업금액(원)", "비고"]
     head = "".join(f"<th>{c}</th>" for c in cols)
     body = []
     for _, r in frame.iterrows():
-        price = r["추정가격(원)"]
+        price = r["사업금액(원)"]
         link = r["공고 링크"]
         full = html.escape(str(r["공고명"]), quote=True)
         # 공고명을 누르면 나라장터 공고가 새 창으로 열림
@@ -599,7 +600,7 @@ query = c1.text_input(
     "🔍 검색", placeholder="공고명, 공고기관 등"
 )
 low, high = c2.select_slider(
-    "💰 추정가격",
+    "💰 사업금액",
     options=PRICE_STEPS,
     value=(PRICE_STEPS[0], PRICE_STEPS[-1]),
     format_func=won,
@@ -610,8 +611,8 @@ for word in query.split():
     text = shown["공고명"].astype(str) + " " + shown["공고기관"].astype(str)
     shown = shown[text.str.contains(word, case=False, regex=False)]
 if (low, high) != (PRICE_STEPS[0], PRICE_STEPS[-1]):
-    # 가격 범위를 좁히면 추정가격이 없는 공고는 제외
-    price = shown["추정가격(원)"]
+    # 금액 범위를 좁히면 금액 정보가 없는 공고는 제외
+    price = shown["사업금액(원)"]
     shown = shown[price.notna() & (price >= low) & (price <= high)]
 if only_new:
     shown = shown[shown["_새공고"]]
@@ -626,7 +627,7 @@ else:
 
     csv = shown.assign(지역제한=shown["_지역제한"])
     csv = csv.drop(columns=[c for c in csv.columns if c.startswith("_")])
-    csv["추정가격(원)"] = csv["추정가격(원)"].map(
+    csv["사업금액(원)"] = csv["사업금액(원)"].map(
         lambda v: f"{int(v):,}" if pd.notna(v) else ""
     )
     st.download_button(
