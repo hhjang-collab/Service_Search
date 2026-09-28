@@ -1,4 +1,5 @@
 import base64
+import html
 import hashlib
 import hmac
 import json
@@ -17,7 +18,7 @@ st.set_page_config(page_title="나라장터 용역 추천", layout="wide")
 
 KST = ZoneInfo("Asia/Seoul")
 LABELS = ["추천", "검토 필요", "관련 낮음"]
-BADGE = {"추천": "🟢", "검토 필요": "🟡"}
+BADGE = {"추천": "🟢 추천", "검토 필요": "🟡 검토 필요"}
 BATCH_SIZE = 30
 
 G2B_URL = (
@@ -28,6 +29,12 @@ GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/"
     "models/{}:generateContent"
 )
+# 제목만 봐도 명백한 비학술 용역은 AI 분석 전에 제외
+NON_ACADEMIC = [
+    "청소", "경비", "방역", "소독", "급식", "폐기물", "제초",
+    "인쇄", "차량 임차", "차량임차", "셔틀", "시설관리", "시설물 관리",
+]
+
 FIELDS = [
     "bidNtceNo", "bidNtceOrd", "bidNtceNm", "ntceInsttNm",
     "dminsttNm", "bidClseDt", "presmptPrce", "bidNtceDtlUrl",
@@ -40,14 +47,26 @@ RULES = """
 참고 실적의 분야·영역·사업명과 공고의 업무 목적을 비교한다.
 키워드 일치만으로 판단하지 않는다.
 
+회사는 연구·조사·분석·기획·컨설팅처럼 보고서·계획·전략 등
+지적 산출물을 만드는 학술 용역을 수행한다.
+
 [분류]
-추천: 실적명에서 유사한 업무 목적·산출물이 확인되거나,
-다른 산업이라도 조사분석, 정책/전략기획, 사업화, 성과/타당성분석,
-AX/DX 컨설팅, 교육/지원사업 운영 등 이전 가능한 역량을
-구체적으로 설명할 수 있다.
-검토 필요: 제목만으로 과업을 알기 어렵거나,
+추천: 학술 용역이면서, 실적명에서 유사한 업무 목적·산출물이
+확인되거나 다른 산업이라도 조사분석, 정책/전략기획, 사업화,
+성과/타당성분석, AX/DX 컨설팅, 교육·지원사업의 기획/성과관리 등
+이전 가능한 역량을 구체적으로 설명할 수 있다.
+검토 필요: 제목만으로 학술 용역인지 알기 어렵거나,
 기술개발/구축/전문자격/협력사 확인이 필요하다.
-관련 낮음: 참고 실적의 업무와 명백히 멀고 확장 근거도 부족하다.
+관련 낮음: 참고 실적의 업무와 명백히 멀거나, 아래 비학술 용역이다.
+
+[비학술 용역 = 관련 낮음]
+연구·조사·기획 산출물 없이 실행·대행이 중심인 용역.
+예: 행사·축제·박람회·설명회·시상식·포럼의 단순 대행·운영,
+공연·전시·부스 운영, 홍보물·영상·기념품 제작, 광고·홍보 대행,
+교육·강의·캠프의 단순 운영, 콜센터·접수·안내 인력, 시설·장비 관리,
+청소·경비·방역·운송·인쇄 등.
+단, 제목에 연구·조사·분석·기획·전략·계획수립·컨설팅·평가 등
+학술 산출물이 드러나면 비학술 용역으로 보지 않는다.
 
 [원칙]
 새로운 산업이라는 이유로 제외하지 않는다.
@@ -216,6 +235,8 @@ def collect(status):
             continue
         if "수의" in str(row.get("cntrctCnclsMthdNm", "")):
             private += 1
+            continue
+        if any(w in str(row.get("bidNtceNm", "")) for w in NON_ACADEMIC):
             continue
         item = {key: row.get(key, "") for key in FIELDS}
         close = deadline(item["bidClseDt"])
@@ -475,17 +496,59 @@ table = pd.DataFrame([
         "공고 링크": (
             r["bidNtceDtlUrl"]
             if str(r["bidNtceDtlUrl"]).startswith(("https://", "http://"))
-            else None
+            else ""
         ),
         "비고": BADGE[r["label"]],
-        "_사유": r["reason"],
-        "_공고번호": f"{r['bidNtceNo']}-{r['bidNtceOrd']}",
+        "판단 이유": r["reason"],
+        "공고번호": f"{r['bidNtceNo']}-{r['bidNtceOrd']}",
     }
     for r in rows
     if r["label"] in BADGE
     and (deadline(r["bidClseDt"]) is None
          or deadline(r["bidClseDt"]) > cutoff)
 ])
+
+
+def render(frame):
+    """내용 길이에 딱 맞는 HTML 표(엑셀 열 너비 자동 맞춤과 같은 방식)."""
+    cols = ["공고명", "공고기관", "입찰마감", "추정가격(원)", "공고 링크", "비고"]
+    head = "".join(f"<th>{c}</th>" for c in cols)
+    body = []
+    for _, r in frame.iterrows():
+        price = r["추정가격(원)"]
+        link = r["공고 링크"]
+        cells = [
+            html.escape(str(r["공고명"])),
+            html.escape(str(r["공고기관"])),
+            html.escape(str(r["입찰마감"])),
+            f"{int(price):,}" if pd.notna(price) else "",
+            (
+                f'<a href="{html.escape(link, quote=True)}" '
+                'target="_blank">열기</a>' if link else ""
+            ),
+            r["비고"],
+        ]
+        body.append(
+            "<tr>" + "".join(
+                f'<td class="c{i}">{v}</td>' for i, v in enumerate(cells)
+            ) + "</tr>"
+        )
+    return (
+        "<style>"
+        ".g2b{max-height:640px;overflow:auto;margin-bottom:1rem;}"
+        ".g2b table{border-collapse:collapse;font-size:14px;}"
+        ".g2b th,.g2b td{white-space:nowrap;padding:6px 12px;"
+        "border-bottom:1px solid rgba(128,128,128,.25);}"
+        ".g2b th{position:sticky;top:0;text-align:left;"
+        "background:var(--background-color,#fff);"
+        "border-bottom:2px solid rgba(128,128,128,.5);}"
+        ".g2b .c3{text-align:right;}"
+        ".g2b .c4{text-align:center;}"
+        "</style>"
+        f'<div class="g2b"><table><thead><tr>{head}</tr></thead>'
+        f'<tbody>{"".join(body)}</tbody></table></div>'
+    )
+
 
 if table.empty:
     st.info("추천·검토 필요로 분류된 미마감 용역이 없습니다.")
@@ -496,21 +559,16 @@ else:
     )
     table = table.sort_values(["비고", "입찰마감"], ascending=[False, True])
     shown = table if view == "전체" else table[table["비고"] == view]
+    st.caption(f"{len(shown)}건")
+    st.markdown(render(shown), unsafe_allow_html=True)
 
-    st.dataframe(
-        shown.drop(columns=["_사유", "_공고번호"]),
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "공고명": st.column_config.TextColumn(width="large"),
-            "추정가격(원)": st.column_config.NumberColumn(format="%d"),
-            "공고 링크": st.column_config.LinkColumn(display_text="열기"),
-        },
+    csv = table.copy()
+    csv["추정가격(원)"] = csv["추정가격(원)"].map(
+        lambda v: f"{int(v):,}" if pd.notna(v) else ""
     )
     st.download_button(
         "결과 CSV 저장",
-        table.rename(columns={"_사유": "판단 이유", "_공고번호": "공고번호"})
-        .to_csv(index=False).encode("utf-8-sig"),
+        csv.to_csv(index=False).encode("utf-8-sig"),
         "용역추천.csv",
         "text/csv",
     )
