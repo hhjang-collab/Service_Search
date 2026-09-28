@@ -17,7 +17,7 @@ st.set_page_config(page_title="나라장터 용역 추천", layout="wide")
 
 KST = ZoneInfo("Asia/Seoul")
 LABELS = ["추천", "검토 필요", "관련 낮음"]
-BADGE = {"추천": "🟢 추천", "검토 필요": "🟡 검토 필요"}
+BADGE = {"추천": "🟢", "검토 필요": "🟡"}
 BATCH_SIZE = 30
 
 G2B_URL = (
