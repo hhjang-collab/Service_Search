@@ -158,8 +158,117 @@ def call(method, url, name, retries=1, **kwargs):
 
 @st.cache_resource(show_spinner=False)
 def shared():
-    """직원 간 공유 저장소(앱 재시작 시 초기화)와 갱신 잠금."""
-    return {"snapshot": None, "cache": {}}, Lock()
+    """직원 간 공유 저장소와 갱신 잠금. 앱이 켜질 때 구글 시트에서 복원."""
+    return {"snapshot": None, "cache": {}, "loaded": False}, Lock()
+
+
+# ---------------------------------------------------------------- 구글 시트 저장
+# Secrets에 gcp_service_account와 SHEET_ID가 있으면 사용하고,
+# 없으면 기존처럼 메모리에만 저장한다.
+
+SHEET_COLS = FIELDS + ["_key", "score"]
+
+
+def sheets_enabled():
+    return "gcp_service_account" in st.secrets and bool(
+        str(st.secrets.get("SHEET_ID", "")).strip()
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def workbook():
+    import gspread
+
+    client = gspread.service_account_from_dict(
+        dict(st.secrets["gcp_service_account"])
+    )
+    return client.open_by_key(str(st.secrets["SHEET_ID"]).strip())
+
+
+def worksheet(title, cols):
+    import gspread
+
+    book = workbook()
+    try:
+        return book.worksheet(title)
+    except gspread.WorksheetNotFound:
+        return book.add_worksheet(title=title, rows=1, cols=cols)
+
+
+def save_sheet(snap):
+    """최근 목록(분석 점수 포함)과 조회 정보를 시트에 덮어쓴다."""
+    rows = [SHEET_COLS] + [
+        [
+            "" if row.get(col) is None else str(row.get(col))
+            for col in SHEET_COLS
+        ]
+        for row in snap["rows"]
+    ]
+    info = [
+        ["at", snap["at"]],
+        ["scope_start", snap["scope"][0]],
+        ["scope_end", snap["scope"][1]],
+        ["profile", snap["profile"]],
+        ["private", str(snap["private"])],
+    ]
+    for title, values in (("목록", rows), ("정보", info)):
+        sheet = worksheet(title, len(values[0]))
+        sheet.clear()
+        sheet.resize(rows=max(len(values), 1), cols=len(values[0]))
+        sheet.update(
+            values=values, range_name="A1", value_input_option="RAW"
+        )
+
+
+def load_sheet():
+    """시트에서 마지막 목록을 읽어 온다. 저장된 것이 없으면 None."""
+    import gspread
+
+    book = workbook()
+    try:
+        values = book.worksheet("목록").get_all_values()
+        info = dict(
+            row[:2] for row in book.worksheet("정보").get_all_values()
+            if len(row) >= 2
+        )
+    except gspread.WorksheetNotFound:
+        return None
+    if not values or "at" not in info:
+        return None
+
+    head, rows = values[0], []
+    for line in values[1:]:
+        row = dict(zip(head, line))
+        score = str(row.get("score", "")).strip()
+        row["score"] = int(score) if score.isdigit() else None
+        rows.append(row)
+    return {
+        "at": info["at"],
+        "scope": [info.get("scope_start", ""), info.get("scope_end", "")],
+        "profile": info.get("profile", ""),
+        "private": int(info.get("private") or 0),
+        "rows": rows,
+    }
+
+
+def restore():
+    """앱이 새로 켜졌을 때 한 번만 시트에서 목록과 분석 결과를 복원."""
+    state, _ = shared()
+    if state["loaded"] or not sheets_enabled():
+        return
+    state["loaded"] = True
+    try:
+        snap = load_sheet()
+    except Exception:
+        st.warning("구글 시트에서 저장 목록을 읽지 못했습니다.")
+        return
+    if snap:
+        state["snapshot"] = snap
+        state["cache"] = {
+            row["_key"]: {"score": row["score"]}
+            for row in snap["rows"]
+            if row.get("_key") and row["score"] is not None
+        }
 
 
 # ---------------------------------------------------------------- 수집
@@ -448,6 +557,8 @@ st.caption(f"참고 사업 {PROFILE_TEXT.count(chr(10)) + 1}건 기준으로 검
 
 # ---------------------------------------------------------------- 조회·갱신
 
+restore()
+
 if st.button("🔄 용역 조회·갱신", type="primary"):
     _, lock = shared()
     if not lock.acquire(blocking=False):
@@ -456,6 +567,14 @@ if st.button("🔄 용역 조회·갱신", type="primary"):
         status, bar = st.empty(), st.empty()
         try:
             error = refresh(status, bar)
+            if sheets_enabled():
+                try:
+                    save_sheet(shared()[0]["snapshot"])
+                except Exception:
+                    st.warning(
+                        "구글 시트 저장에 실패했습니다. 이번 결과는 앱이 "
+                        "켜져 있는 동안만 유지됩니다."
+                    )
             if error:
                 st.error(error + " 여기까지 분석한 결과를 표시합니다.")
             else:
