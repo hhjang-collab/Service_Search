@@ -542,7 +542,7 @@ st.title("나라장터 용역 추천")
 with st.sidebar:
     st.link_button("🏠 홈으로", "https://ip2b-work-tools.streamlit.app/")
     st.caption(f"공고 등록일 기준 최근 {DAYS}일을 조회합니다.")
-    st.caption("수의계약 공고는 조회 단계에서 제외합니다.")
+    st.caption("수의계약 공고는 제외합니다.")
     if st.button("로그아웃"):
         st.session_state.clear()
         st.rerun()
@@ -579,13 +579,13 @@ except Exception:
     st.stop()
 
 PROFILE_HASH = digest([PROFILE_TEXT, RULES, MODEL])
-st.caption(f"참고 사업 {PROFILE_TEXT.count(chr(10)) + 1}건 기준으로 검토합니다.")
+st.caption(f"기존 수행실적 {PROFILE_TEXT.count(chr(10)) + 1}건 기준으로 검토합니다.")
 
 # ---------------------------------------------------------------- 조회·갱신
 
 restore()
 
-if st.button("🔄 용역 조회·갱신", type="primary"):
+if st.button("🔄 나라장터 입찰공고 조회", type="primary"):
     _, lock = shared()
     if not lock.acquire(blocking=False):
         st.error("다른 직원이 갱신 중입니다. 잠시 후 다시 확인해주세요.")
