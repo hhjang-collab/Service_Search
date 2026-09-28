@@ -474,7 +474,8 @@ def render(frame):
     for _, r in frame.iterrows():
         price = r["추정가격(원)"]
         link = r["공고 링크"]
-        name = html.escape(str(r["공고명"]))
+        full = html.escape(str(r["공고명"]), quote=True)
+        name = f'<span class="nm" title="{full}">{full}</span>'
         if r["_새공고"]:
             name = '<span class="tag-new">NEW</span>' + name
         if r["_지역제한"]:
@@ -516,6 +517,8 @@ def render(frame):
         "background:var(--background-color,#fff);"
         "border-bottom:2px solid rgba(128,128,128,.5);}"
         ".g2b .c3{text-align:right;}"
+        ".g2b .nm{display:inline-block;max-width:520px;overflow:hidden;"
+        "text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;}"
         ".g2b .c4,.g2b .c5{text-align:center;}"
         "</style>"
         f'<div class="g2b"><table><thead><tr>{head}</tr></thead>'
