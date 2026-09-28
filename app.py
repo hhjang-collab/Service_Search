@@ -514,7 +514,7 @@ table = table.sort_values(
 ).drop(columns="_정렬")
 
 # --- 🔍 검색·필터 ---
-c1, c2, c3 = st.columns([3, 3, 1.3])
+c1, c2, c3 = st.columns([3, 2, 2])
 query = c1.text_input(
     "🔍 검색", placeholder="공고명, 공고기관 등"
 )
@@ -524,7 +524,8 @@ low, high = c2.select_slider(
     value=(PRICE_STEPS[0], PRICE_STEPS[-1]),
     format_func=won,
 )
-only_new = c3.toggle("🆕 새 공고만")
+r1, r2 = st.columns([5, 1])
+only_new = r2.toggle("🆕 새 공고만")
 
 shown = table
 for word in query.split():
@@ -537,7 +538,7 @@ if (low, high) != (PRICE_STEPS[0], PRICE_STEPS[-1]):
 if only_new:
     shown = shown[shown["_새공고"]]
 
-st.caption(f"검색 결과 {len(shown)}건")
+r1.caption(f"검색 결과 {len(shown)}건")
 if shown.empty:
     st.info("조건에 맞는 공고가 없습니다.")
 else:
