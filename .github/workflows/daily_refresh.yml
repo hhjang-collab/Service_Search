@@ -2,20 +2,33 @@ name: 나라장터 용역 자동 조회
 
 on:
   schedule:
-    - cron: "30 22 * * 0-4"
-  workflow_dispatch:
+    # GitHub 시간(UTC) 기준. 정각·30분은 예약이 몰려 늦어지기 쉬워 17분으로 둠.
+    # 평일 오전 7시 17분(한국시간) = UTC 전날 22:17
+    - cron: "17 22 * * 0-4"
+    # 예비 실행: 평일 오전 9시 17분(한국시간) = UTC 00:17
+    # 첫 실행이 늦거나 실패해도 출근 시간대에 목록을 채움(성공했으면 새 공고만 분석)
+    - cron: "17 0 * * 1-5"
+  workflow_dispatch:  # Actions 화면에서 'Run workflow'로 바로 실행 가능
+
+# 두 실행이 겹치면 앞의 것이 끝난 뒤 다음 것을 실행
+concurrency:
+  group: daily-refresh
+  cancel-in-progress: false
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
       - name: 필요한 패키지 설치
         run: pip install pandas openpyxl requests gspread google-auth
+
       - name: 공고 수집·분석 후 구글 시트 저장
         run: python daily_job.py
         env:
@@ -26,3 +39,4 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           LOOKBACK_DAYS: ${{ vars.LOOKBACK_DAYS }}
           AI_WORKERS: ${{ vars.AI_WORKERS }}
+          AI_BATCH_SIZE: ${{ vars.AI_BATCH_SIZE }}
