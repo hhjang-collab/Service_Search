@@ -15,8 +15,14 @@ import pandas as pd
 import requests
 
 KST = ZoneInfo("Asia/Seoul")
-BATCH_SIZE = 60   # AI 한 번 요청에 보내는 공고 수
+BATCH_SIZE = 60   # AI 한 번 요청에 보내는 공고 수(configure로 변경 가능)
 RATE_LIMITED = [0]  # 이번 조회에서 요청 한도(429)에 걸린 횟수
+QUOTA_OUT = [False]  # 이번 조회에서 AI 하루 한도를 다 썼는지
+
+# 나라장터(공공데이터포털) 연결: 응답이 느리거나 끊기는 경우가 있어 넉넉히 재시도
+G2B_RETRY = dict(retries=5, timeout=(20, 60), waits=(10, 20, 40, 60))
+# Gemini: 생각하는 시간이 긴 모델도 기다릴 수 있게 응답 대기 180초
+GEMINI_TIMEOUT = (10, 180)
 
 G2B_URL = (
     "https://apis.data.go.kr/1230000/ad/"
@@ -165,17 +171,32 @@ def deadline(value):
     )
 
 
-def call(method, url, name, retries=1, **kwargs):
-    """HTTP 호출. 일시 오류(429·5xx·연결 실패)는 대기 후 재시도."""
+class QuotaExhausted(RuntimeError):
+    """AI 하루 사용 한도 초과(기다려도 풀리지 않으므로 재시도하지 않음)."""
+
+
+def is_daily_quota(res):
+    """429 응답이 '하루 한도' 초과인지(분당 한도가 아닌지) 확인."""
+    text = res.text.lower()
+    return "perday" in text or "per day" in text or "per_day" in text
+
+
+def call(method, url, name, retries=1, timeout=(10, 90), waits=None,
+         **kwargs):
+    """HTTP 호출. 일시 오류(429·5xx·연결 실패)는 대기 후 재시도.
+
+    waits: 재시도 전 기다릴 초(차례대로). 없으면 짧게 늘려 가며 기다림.
+    """
+    def pause(attempt, default):
+        time.sleep(waits[min(attempt, len(waits) - 1)] if waits else default)
+
     for attempt in range(retries):
         last = attempt == retries - 1
         try:
-            res = requests.request(
-                method, url, timeout=(10, 90), **kwargs
-            )
+            res = requests.request(method, url, timeout=timeout, **kwargs)
         except requests.RequestException:
             if not last:
-                time.sleep(2 ** attempt + 1)
+                pause(attempt, 2 ** attempt + 1)
                 continue
             raise RuntimeError(
                 f"{name}: 연결 실패 또는 응답 시간 초과"
@@ -183,8 +204,15 @@ def call(method, url, name, retries=1, **kwargs):
 
         if res.status_code == 429:
             RATE_LIMITED[0] += 1
+            if is_daily_quota(res):
+                QUOTA_OUT[0] = True
+                raise QuotaExhausted(
+                    f"{name}: 오늘 AI 사용 한도를 모두 썼습니다. "
+                    "한도가 초기화되는 한국 시간 오후 4~5시 이후 다시 조회하면 "
+                    "남은 공고를 이어서 분석합니다."
+                )
         if res.status_code in (429, 500, 502, 503, 504) and not last:
-            time.sleep(min(30, 3 * 2 ** attempt))
+            pause(attempt, min(30, 3 * 2 ** attempt))
             continue
 
         if not res.ok:
@@ -439,7 +467,7 @@ def fetch_regions(start, end, wanted, status):
                 f"참가가능지역 확인 중: {cursor} ~ {stop}, {page}페이지"
             )
             items, total = parse_g2b(call(
-                "GET", RGN_URL, "나라장터(참가가능지역)", retries=3,
+                "GET", RGN_URL, "나라장터(참가가능지역)", **G2B_RETRY,
                 params={
                     "serviceKey": unquote(CFG["G2B_API_KEY"]),
                     "type": "json",
@@ -485,7 +513,7 @@ def collect(status):
                 f"공고 수집 중: {cursor} ~ {stop}, {page}페이지"
             )
             items, total = parse_g2b(call(
-                "GET", G2B_URL, "나라장터", retries=3,
+                "GET", G2B_URL, "나라장터", **G2B_RETRY,
                 params={
                     "serviceKey": unquote(CFG["G2B_API_KEY"]),
                     "type": "json",
@@ -554,6 +582,7 @@ def classify(batch):
     ]
     data = call(
         "POST", GEMINI_URL.format(MODEL), "Gemini", retries=5,
+        timeout=GEMINI_TIMEOUT,
         headers={"x-goog-api-key": CFG["GOOGLE_API_KEY"]},
         json={
             "systemInstruction": {"parts": [{"text": RULES}]},
@@ -614,10 +643,13 @@ def refresh(cache, status, bar):
     todo = todo[:BATCHES * BATCH_SIZE]
     error, done = None, 0
     RATE_LIMITED[0] = 0
-    # 묶음 수를 동시 요청 수의 배수로 맞추고 크기를 고르게 나눠
+    QUOTA_OUT[0] = False
+    # 한 묶음이면 요청 1번으로 보냄(요청 수 절약).
+    # 여러 묶음이면 동시 요청 수의 배수로 맞추고 크기를 고르게 나눠
     # 마지막에 큰 묶음 하나만 혼자 남아 기다리는 일을 줄임
     count = -(-len(todo) // BATCH_SIZE)
-    count = min(len(todo), -(-count // WORKERS) * WORKERS)
+    if count > 1:
+        count = min(len(todo), -(-count // WORKERS) * WORKERS)
     batches = [todo[i::count] for i in range(count)] if todo else []
 
     if batches:
@@ -639,6 +671,15 @@ def refresh(cache, status, bar):
                     except RuntimeError as exc:
                         error = str(exc)
                     done += jobs[job]
+                if QUOTA_OUT[0]:
+                    # 하루 한도 초과: 남은 요청은 보내 봐야 실패하므로 바로 중단
+                    error = next(
+                        (str(j.exception()) for j in jobs
+                         if j.done() and not j.cancelled()
+                         and isinstance(j.exception(), QuotaExhausted)),
+                        error,
+                    )
+                    break
                 if finished:
                     bar.progress(
                         done / len(todo),
